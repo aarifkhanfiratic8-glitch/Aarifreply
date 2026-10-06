@@ -209,3 +209,504 @@ class AutoAccessibilityService : AccessibilityService() {
         gatherRows(root, c, 0)
         return c.size >= 4
     }
+    private val queueStep: Runnable = object : Runnable {
+        override fun run() {
+            if (!queueActive) return
+            if (!Prefs.masterEnabled(this@AutoAccessibilityService)) return
+            val pkg: String = Prefs.queuePkg(this@AutoAccessibilityService)
+
+            val root: AccessibilityNodeInfo? = rootInActiveWindow
+            if (root == null) {
+                qHandler.postDelayed(this, 2000)
+                return
+            }
+
+            val currentPkg: String? = root.packageName?.toString()
+            if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
+                wrongPkgCount++
+                if (wrongPkgCount < 3) {
+                    qHandler.postDelayed(this, 2000)
+                    return
+                }
+                dbg("PAUSED (user in other app)")
+                expectingChat = false
+                qHandler.postDelayed(this, 10000)
+                return
+            }
+            wrongPkgCount = 0
+
+            if (currentPkg != pkg) {
+                qHandler.postDelayed(this, 3000)
+                return
+            }
+
+            val leaveDialog: AccessibilityNodeInfo? =
+                findNodeWithText(root, "are you sure to leave", 0)
+            if (leaveDialog != null) {
+                dbg("Dialog - auto Cancel")
+                val cancelBtn: AccessibilityNodeInfo? = findNodeWithText(root, "cancel", 0)
+                if (cancelBtn != null) {
+                    cancelBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+                expectingChat = false
+                qHandler.postDelayed(this, 3000)
+                return
+            }
+
+            if (expectingChat) {
+                expectingChat = false
+                if (!isInChat(root)) {
+                    dbg("Chat not opened - rescanning")
+                    qHandler.postDelayed(this, 4000)
+                    return
+                }
+                dbg("Chat opened: " + lastSender)
+                armWatchdog()
+                analyzeChat(root)
+                return
+            }
+
+            if (isInChat(root)) {
+                dbg("In chat - analyzing")
+                armWatchdog()
+                analyzeChat(root)
+                return
+            }
+
+            if (!isOnList(root)) {
+                dbg("Other screen - back to list")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                expectingChat = false
+                qHandler.postDelayed(this, 2500)
+                return
+            }
+
+            dbg("Scanning badges...")
+            val badged: List<Triple<AccessibilityNodeInfo, String, AccessibilityNodeInfo>> =
+                findBadgeNodes(root)
+            if (badged.isEmpty()) {
+                dbg("No notifications - waiting")
+                qHandler.postDelayed(this, 60000)
+                return
+            }
+
+            val pick: Triple<AccessibilityNodeInfo, String, AccessibilityNodeInfo> = badged[0]
+            lastSender = pick.second
+            val br = Rect()
+            pick.third.getBoundsInScreen(br)
+            val dw2: Int = resources.displayMetrics.widthPixels
+            val tapX: Float = (br.left - dw2 * 0.12f)
+            val tapY: Float = ((br.top + br.bottom) / 2).toFloat()
+            dbg("Badge tap: " + pick.second)
+            tap(tapX, tapY)
+            expectingChat = true
+            qHandler.removeCallbacksAndMessages(null)
+            qHandler.postDelayed(this, 12000)
+        }
+    }
+
+    private fun armWatchdog() {
+        qHandler.removeCallbacksAndMessages(null)
+        qHandler.postDelayed({
+            if (queueActive) {
+                val root: AccessibilityNodeInfo? = rootInActiveWindow
+                if (root != null && isInChat(root)) {
+                    dbg("Watchdog: back to list")
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                }
+                qHandler.postDelayed(queueStep, 2500)
+            }
+        }, 40000)
+    }
+
+    private fun analyzeChat(root: AccessibilityNodeInfo) {
+        val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
+        if (msgs.isEmpty()) {
+            dbg("No messages - casual msg")
+            sendCasualText()
+            return
+        }
+        val last: Pair<String, Boolean> = msgs[msgs.size - 1]
+        if (last.second) {
+            dbg("Our last - casual msg")
+            sendCasualText()
+            return
+        }
+        dbg("Their msg - AI reply")
+        handleTheirMessage(msgs, lastSender)
+    }
+
+    private fun sendCasualText() {
+        val msg: String = casuals[casualIdx % casuals.size]
+        casualIdx++
+        ChatHistory.add(this, lastSender, "me", msg)
+        typeAndSend(msg)
+    }
+
+    private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
+        val recent: List<Pair<String, Boolean>> = msgs.takeLast(6)
+        val contextLines: List<String> = recent.map {
+            if (it.second) "You: " + it.first else "Them: " + it.first
+        }
+        val newMsg: String = msgs[msgs.size - 1].first
+        thread {
+            val reply: String? = try {
+                ReplyGenerator.generate(this, sender, contextLines, newMsg)
+            } catch (e: Exception) { null }
+            if (reply.isNullOrBlank()) {
+                dbg("AI failed - casual fallback")
+                handler.post { sendCasualText() }
+                return@thread
+            }
+            ChatHistory.add(this, sender, "them", newMsg)
+            ChatHistory.add(this, sender, "me", reply)
+            handler.post { typeAndSend(reply) }
+        }
+    }
+
+    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+        val out = ArrayList<Pair<String, Boolean>>()
+        val dw: Int = resources.displayMetrics.widthPixels
+        val dh: Int = resources.displayMetrics.heightPixels
+        collectMessages(root, out, dw, dh, 0)
+        return out.takeLast(12)
+    }
+
+    private fun collectMessages(
+        node: AccessibilityNodeInfo,
+        out: ArrayList<Pair<String, Boolean>>,
+        dw: Int,
+        dh: Int,
+        depth: Int
+    ) {
+        if (depth > 16) return
+        if (!node.isEditable) {
+            val t: String? = node.text?.toString()?.trim()
+            if (t != null && t.isNotEmpty() && node.childCount == 0) {
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                val cy: Int = (r.top + r.bottom) / 2
+                val cx: Int = (r.left + r.right) / 2
+                if (cy > dh * 0.20 && !looksLikeMeta(t)) {
+                    out.add(Pair(t, cx > dw / 2))
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectMessages(c, out, dw, dh, depth + 1)
+        }
+    }
+
+    private fun looksLikeMeta(t: String): Boolean {
+        if (t.length <= 1) return true
+        if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
+        if (t.matches(Regex("^\\d{4}/.*"))) return true
+        val low: String = t.lowercase()
+        if (low.contains("congrats")) return true
+        if (low.contains("streak")) return true
+        if (low.contains("intimacy")) return true
+        if (low.contains("restore")) return true
+        if (low.contains("next unread")) return true
+        if (low.contains("go have a chat")) return true
+        if (t == "View" || t == "New" || t == "Online") return true
+        if (low.endsWith("km") && t.length <= 8) return true
+        return false
+    }
+
+    private fun typeAndSend(reply: String) {
+        lastReply = reply
+        handler.postDelayed({
+            val root: AccessibilityNodeInfo? = rootInActiveWindow
+            if (root == null) return@postDelayed
+            val field: AccessibilityNodeInfo? = findInput(root)
+            if (field == null) {
+                dbg("No input field - NO back")
+                return@postDelayed
+            }
+            dbg("Pasting...")
+            val clipboard: android.content.ClipboardManager =
+                getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(
+                android.content.ClipData.newPlainText("reply", reply)
+            )
+            field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            handler.postDelayed({
+                val root2: AccessibilityNodeInfo? = rootInActiveWindow
+                val field2: AccessibilityNodeInfo? =
+                    if (root2 == null) null else findInput(root2)
+                val txt: String = field2?.text?.toString() ?: ""
+                if (txt.isNotBlank()) {
+                    dbg("Paste confirmed")
+                    handler.postDelayed({ trySendClick(0) }, 800)
+                } else {
+                    dbg("Retry with SET_TEXT")
+                    val args = Bundle()
+                    args.putCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        reply
+                    )
+                    if (field2 != null) {
+                        field2.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    }
+                    handler.postDelayed({
+                        val root3: AccessibilityNodeInfo? = rootInActiveWindow
+                        val field3: AccessibilityNodeInfo? =
+                            if (root3 == null) null else findInput(root3)
+                        val t3: String = field3?.text?.toString() ?: ""
+                        if (t3.isNotBlank()) {
+                            dbg("Text confirmed")
+                            handler.postDelayed({ trySendClick(0) }, 800)
+                        } else {
+                            dbg("No text - NO back, waiting")
+                        }
+                    }, 900)
+                }
+            }, 900)
+        }, 800)
+    }
+    private fun trySendClick(attempt: Int) {
+        if (attempt > 12) {
+            dbg("Send button NOT found - NO back, waiting")
+            return
+        }
+        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
+        val send: AccessibilityNodeInfo? = findSendButton(root, 0)
+        if (send == null) {
+            handler.postDelayed({ trySendClick(attempt + 1) }, 500)
+            return
+        }
+        dbg("Clicking SEND")
+        val ok: Boolean = send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (ok) {
+            dbg("SENT!")
+            handler.postDelayed({ goNextOrBack() }, 3000)
+            return
+        }
+        handler.postDelayed({ trySendClick(attempt + 1) }, 500)
+    }
+
+    private fun goNextOrBack() {
+        handler.postDelayed({
+            val clicked: Boolean = findNextUnreadAndClick()
+            if (!clicked) backToListIfInChat()
+        }, 2000)
+    }
+
+    private fun findNextUnreadAndClick(): Boolean {
+        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return false
+        val node: AccessibilityNodeInfo? = findNodeWithText(root, "next unread", 0)
+        if (node != null) {
+            val ok: Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (ok) {
+                expectingChat = true
+                dbg("Next unread clicked")
+                armWatchdog()
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun backToListIfInChat() {
+        qHandler.removeCallbacksAndMessages(null)
+        val root: AccessibilityNodeInfo? = rootInActiveWindow
+        if (root != null && isInChat(root)) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            qHandler.postDelayed(queueStep, 2800)
+        } else {
+            qHandler.postDelayed(queueStep, 2500)
+        }
+    }
+
+    private fun isSystemRow(name: String): Boolean {
+        if (name.contains("TOKI TEAM", ignoreCase = true)) return true
+        if (name == "My chat room") return true
+        if (name == "Moments") return true
+        if (name == "Contacts") return true
+        if (name.contains("Join a family")) return true
+        if (name.contains("Interaction notifications")) return true
+        return false
+    }
+
+    private fun rowTop(node: AccessibilityNodeInfo): Int {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        return r.top
+    }
+
+    private fun findBadgeNodes(
+        root: AccessibilityNodeInfo
+    ): List<Triple<AccessibilityNodeInfo, String, AccessibilityNodeInfo>> {
+        val badges = ArrayList<Triple<AccessibilityNodeInfo, String, AccessibilityNodeInfo>>()
+        val dw: Int = resources.displayMetrics.widthPixels
+        collectBadges(root, dw, badges, 0)
+        badges.sortBy { rowTop(it.first) }
+        return badges
+    }
+
+    private fun collectBadges(
+        node: AccessibilityNodeInfo,
+        dw: Int,
+        out: MutableList<Triple<AccessibilityNodeInfo, String, AccessibilityNodeInfo>>,
+        depth: Int
+    ) {
+        if (depth > 16) return
+        val t: String? = node.text?.toString()?.trim()
+        if (t != null && t.isNotEmpty() && node.childCount == 0 &&
+            t.matches(Regex("^\\d{1,2}$"))
+        ) {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            if (((r.left + r.right) / 2) > dw * 0.65) {
+                val row: AccessibilityNodeInfo? = findRowContainer(node, dw, 0)
+                if (row != null) {
+                    val texts = ArrayList<String>()
+                    collectLeafTexts(row, texts, 0)
+                    val name: String = if (texts.isNotEmpty()) texts[0] else "friend"
+                    if (!isSystemRow(name)) {
+                        out.add(Triple(row, name, node))
+                    }
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectBadges(c, dw, out, depth + 1)
+        }
+    }
+
+    private fun findRowContainer(
+        node: AccessibilityNodeInfo,
+        dw: Int,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 8) return null
+        val p: AccessibilityNodeInfo? = node.parent
+        if (p == null) return node
+        val r = Rect()
+        p.getBoundsInScreen(r)
+        if (r.width() > dw * 0.5) return p
+        return findRowContainer(p, dw, depth + 1)
+    }
+
+    private fun gatherRows(
+        node: AccessibilityNodeInfo,
+        candidates: MutableList<Triple<AccessibilityNodeInfo, String, String>>,
+        depth: Int
+    ) {
+        if (depth > 14) return
+        if (node.isClickable) {
+            val texts = ArrayList<String>()
+            collectLeafTexts(node, texts, 0)
+            if (texts.size >= 2) {
+                val name: String = texts[0]
+                if (name.length in 2..30 && !name.contains(":")) {
+                    candidates.add(Triple(node, name, texts[1]))
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) gatherRows(child, candidates, depth + 1)
+        }
+    }
+
+    private fun collectLeafTexts(node: AccessibilityNodeInfo, out: MutableList<String>, depth: Int) {
+        if (depth > 9) return
+        val t: String? = node.text?.toString()?.trim()
+        if (t != null && t.isNotEmpty() && node.childCount == 0) {
+            out.add(t)
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectLeafTexts(c, out, depth + 1)
+        }
+    }
+
+    private fun findNodeWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.contains(text, ignoreCase = true)) return node
+        val cd: String? = node.contentDescription?.toString()
+        if (cd != null && cd.contains(text, ignoreCase = true)) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findNodeWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    private fun tap(x: Float, y: Float) {
+        try {
+            val p = Path()
+            p.moveTo(x, y)
+            val g: GestureDescription = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(p, 0, 60))
+                .build()
+            dispatchGesture(g, null, null)
+        } catch (e: Exception) { }
+    }
+
+    private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findInput(child)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun findSendButton(node: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val desc: String = node.contentDescription?.toString()?.lowercase() ?: ""
+        val cls: String = node.className?.toString() ?: ""
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val dw: Int = resources.displayMetrics.widthPixels
+        val dh: Int = resources.displayMetrics.heightPixels
+        val cx: Int = (r.left + r.right) / 2
+        val cy: Int = (r.top + r.bottom) / 2
+        val inSendZone: Boolean = cx > dw * 0.55 && cy > dh * 0.70
+        if (inSendZone && node.isEnabled && node.isClickable &&
+            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))
+        ) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findSendButton(child, depth + 1)
+                if (found != null) return found
+            }
+        }
+        if (inSendZone && node.isEnabled && node.isClickable && node.childCount == 0) {
+            return node
+        }
+        return null
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg: String = event.packageName?.toString() ?: return
+        if (queueActive && pkg == Prefs.queuePkg(this) &&
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        ) {
+            qHandler.removeCallbacks(queueStep)
+            qHandler.postDelayed(queueStep, 800)
+        }
+    }
+
+    override fun onInterrupt() { }
+}
