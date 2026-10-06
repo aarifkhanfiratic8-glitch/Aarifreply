@@ -38,6 +38,29 @@ object ChatHistory {
     fun lastMeText(c: Context, sender: String): String? =
         get(c, sender).lastOrNull { it.first == "me" }?.second
 
+    /** last 30 logo ki rotating list (sabse recent last mein) */
+    @Synchronized
+    fun addMessaged(c: Context, sender: String) {
+        val list = recentSenders(c).toMutableList()
+        list.remove(sender)
+        list.add(sender)
+        while (list.size > 30) list.removeAt(0)
+        val arr = JSONArray()
+        for (s in list) arr.put(s)
+        store(c).edit().putString("recentSenders", arr.toString()).apply()
+    }
+
+    @Synchronized
+    fun recentSenders(c: Context): List<String> {
+        val raw = store(c).getString("recentSenders", "[]") ?: "[]"
+        val out = ArrayList<String>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) out.add(arr.getString(i))
+        } catch (e: Exception) { }
+        return out
+    }
+
     @Synchronized
     private fun save(c: Context, sender: String, list: List<Pair<String, String>>) {
         val raw = store(c).getString("data", "{}") ?: "{}"
