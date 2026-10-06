@@ -196,7 +196,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun isInChat(root: AccessibilityNodeInfo): Boolean {
-        val field: AccessibilityNodeInfo? = findInput(root) ?: return false
+        val field: AccessibilityNodeInfo = findInput(root) ?: return false
         val r = Rect()
         field.getBoundsInScreen(r)
         val dh: Int = resources.displayMetrics.heightPixels
