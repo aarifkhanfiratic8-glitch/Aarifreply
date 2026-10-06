@@ -13,7 +13,6 @@ class ReplyService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "AutoReply"
-        /** (newMessage, contentIntent, senderName) — Accessibility context padhkar reply karega */
         var pendingChat: Triple<String, PendingIntent, String>? = null
     }
 
@@ -24,6 +23,7 @@ class ReplyService : NotificationListenerService() {
     private fun handle(sbn: StatusBarNotification) {
         val pkg = sbn.packageName
         if (!Prefs.masterEnabled(this)) return
+        if (AutoAccessibilityService.queueActive) return // queue mode khud sambhalega
         if (!Prefs.isPackageEnabled(this, pkg)) return
         if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
 
@@ -32,15 +32,11 @@ class ReplyService : NotificationListenerService() {
         val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString()?.takeIf { it.isNotBlank() } ?: return
 
-        // system messages kabhi reply mat karo
         if (title.contains("TOKI", ignoreCase = true) && title.contains("TEAM", ignoreCase = true)) return
         if (text.contains("[Match]", ignoreCase = true)) return
-
-        // khud ke bheje reply ka echo notification — loop rokne ke liye
         if (ChatHistory.lastMeText(this, title) == text) return
 
         if (Prefs.contextMode(this)) {
-            // SMART MODE: chat kholo, Accessibility screen padhega + AI reply karega
             val contentIntent = sbn.notification.contentIntent ?: return
             Log.d(TAG, "smart mode: opening chat with $title")
             Thread {
@@ -54,7 +50,6 @@ class ReplyService : NotificationListenerService() {
                 }
             }.start()
         } else {
-            // QUICK MODE: direct inline reply (history ke bina)
             Thread {
                 try { Thread.sleep(Prefs.humanDelayMs(this)) } catch (_: Exception) {}
                 if (tryInlineReply(sbn, text, title)) {
