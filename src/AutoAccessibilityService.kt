@@ -41,6 +41,19 @@ class AutoAccessibilityService : AccessibilityService() {
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
 
+    private var nudgeMode: Boolean = false
+    private var nudgeTargetIdx: Int = 0
+    private var nudgeTextIdx: Int = 0
+    private var lastActionTime: Long = 0L
+
+    private val nudges: List<String> = listOf(
+        "hello, kyu reply nahi de rhe ho 😊",
+        "kya hua yrr? busy ho kya",
+        "so gye kya? 😅",
+        "reply kar do na yrr, intezaar hai",
+        "kahan gayab ho gaye aap 😄"
+    )
+
     override fun onServiceConnected() {
         instance = this
         val info: AccessibilityServiceInfo = AccessibilityServiceInfo()
@@ -59,8 +72,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
-    // ---------------- DEBUG ----------------
-
     private fun dbg(msg: String) {
         handler.post {
             try { debugText?.text = msg } catch (e: Exception) { }
@@ -72,6 +83,8 @@ class AutoAccessibilityService : AccessibilityService() {
     fun startQueue() {
         queueActive = true
         expectingChat = false
+        nudgeMode = false
+        lastActionTime = System.currentTimeMillis()
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         try { wakeLock?.release() } catch (_: Exception) { }
@@ -81,21 +94,22 @@ class AutoAccessibilityService : AccessibilityService() {
         wakeLock = wl
         showOverlay()
         updatePauseBtn()
-        dbg("Queue STARTED")
+        dbg("Queue ON")
         qHandler.postDelayed(queueStep, 1500)
     }
 
     fun stopQueue() {
         queueActive = false
         expectingChat = false
+        nudgeMode = false
         qHandler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
         updatePauseBtn()
-        dbg("Queue PAUSED")
+        dbg("Queue OFF")
     }
 
-    // ---------------- OVERLAY (sirf REPLY + PAUSE) ----------------
+    // ---------------- OVERLAY (sirf ON/OFF button) ----------------
 
     private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
@@ -122,9 +136,7 @@ class AutoAccessibilityService : AccessibilityService() {
             debugText = dt
             box.addView(dt)
 
-            box.addView(makeOverlayButton("REPLY", 0xFF2E7D32.toInt()) { replyCurrentChat() })
-
-            val pb: Button = makeOverlayButton("PAUSE", 0xFFC62828.toInt()) {
+            val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt()) {
                 if (queueActive) stopQueue() else startQueue()
             }
             pauseBtn = pb
@@ -157,24 +169,12 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun updatePauseBtn() {
         if (queueActive) {
-            pauseBtn?.text = "PAUSE"
-            pauseBtn?.setBackgroundColor(0xFFC62828.toInt())
-        } else {
-            pauseBtn?.text = "RESUME"
+            pauseBtn?.text = "ON"
             pauseBtn?.setBackgroundColor(0xFF2E7D32.toInt())
+        } else {
+            pauseBtn?.text = "OFF"
+            pauseBtn?.setBackgroundColor(0xFFC62828.toInt())
         }
-    }
-
-    private fun replyCurrentChat() {
-        val root: AccessibilityNodeInfo? = rootInActiveWindow
-        if (root == null) { dbg("REPLY: no window"); return }
-        if (root.packageName?.toString() != Prefs.queuePkg(this)) {
-            dbg("REPLY: not in app")
-            return
-        }
-        dbg("REPLY: analyzing")
-        armWatchdog()
-        analyzeChat(root)
     }
 
     // ---------------- MAIN QUEUE LOOP ----------------
@@ -190,7 +190,8 @@ class AutoAccessibilityService : AccessibilityService() {
             if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
                 dbg("PAUSED (user in other app)")
                 expectingChat = false
-                qHandler.postDelayed(this, Prefs.queueIntervalMs(this@AutoAccessibilityService))
+                nudgeMode = false
+                qHandler.postDelayed(this, 10000)
                 return
             }
             if (currentPkg != null && currentPkg == packageName) {
@@ -200,6 +201,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
             if (root == null || currentPkg != pkg) {
                 expectingChat = false
+                nudgeMode = false
                 dbg("Opening " + pkg)
                 val intent: Intent? = packageManager.getLaunchIntentForPackage(pkg)
                 if (intent != null) {
@@ -222,15 +224,44 @@ class AutoAccessibilityService : AccessibilityService() {
             val row: Pair<AccessibilityNodeInfo, String>? = findPendingRow(root)
             if (row != null) {
                 lastSender = row.second
+                nudgeMode = false
                 dbg("Pending: " + row.second)
                 clickRowTextArea(row.first, row.second)
                 expectingChat = true
                 qHandler.removeCallbacksAndMessages(null)
                 qHandler.postDelayed(this, 12000)
-            } else {
-                dbg("No pending - waiting")
-                qHandler.postDelayed(this, Prefs.queueIntervalMs(this@AutoAccessibilityService))
+                return
             }
+
+            // koi pending nahi — 20 sec rule: last 30 ko nudge karo
+            if (Prefs.nudgeEnabled(this@AutoAccessibilityService)) {
+                val elapsed: Long = System.currentTimeMillis() - lastActionTime
+                if (elapsed < 20000) {
+                    qHandler.postDelayed(this, 20000 - elapsed)
+                    return
+                }
+                val targets: List<String> = ChatHistory.recentSenders(this@AutoAccessibilityService)
+                if (targets.isNotEmpty()) {
+                    val target: String = targets[nudgeTargetIdx % targets.size]
+                    nudgeTargetIdx++
+                    val node: AccessibilityNodeInfo? = findNodeWithText(root, target, 0)
+                    if (node != null) {
+                        val r = Rect()
+                        node.getBoundsInScreen(r)
+                        lastSender = target
+                        nudgeMode = true
+                        dbg("Nudge: " + target)
+                        tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
+                        expectingChat = true
+                        qHandler.removeCallbacksAndMessages(null)
+                        qHandler.postDelayed(this, 12000)
+                        return
+                    }
+                }
+            }
+
+            dbg("No pending - waiting")
+            qHandler.postDelayed(this, 10000)
         }
     }
 
@@ -256,12 +287,28 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         val last: Pair<String, Boolean> = msgs[msgs.size - 1]
         if (last.second) {
-            dbg("Last msg is OURS - skip")
-            goNextOrBack()
+            if (nudgeMode) {
+                nudgeMode = false
+                dbg("Sending nudge")
+                sendNudgeText()
+            } else {
+                dbg("Last msg is OURS - skip")
+                goNextOrBack()
+            }
             return
         }
+        nudgeMode = false
         dbg("Their msg - replying")
         handleTheirMessage(msgs, lastSender)
+    }
+
+    private fun sendNudgeText() {
+        val msg: String = nudges[nudgeTextIdx % nudges.size]
+        nudgeTextIdx++
+        lastActionTime = System.currentTimeMillis()
+        ChatHistory.add(this, lastSender, "me", msg)
+        ChatHistory.addMessaged(this, lastSender)
+        typeAndSend(msg)
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
@@ -279,13 +326,14 @@ class AutoAccessibilityService : AccessibilityService() {
                 handler.post { goNextOrBack() }
                 return@thread
             }
+            lastActionTime = System.currentTimeMillis()
             ChatHistory.add(this, sender, "them", newMsg)
             ChatHistory.add(this, sender, "me", reply)
+            ChatHistory.addMessaged(this, sender)
             handler.post { typeAndSend(reply) }
         }
     }
 
-    /** RIGHT bubble = humara (true), LEFT = unka (false) */
     private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
@@ -349,7 +397,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 goNextOrBack()
                 return@postDelayed
             }
-            dbg("Pasting reply...")
+            dbg("Pasting...")
             val clipboard: ClipboardManager =
                 getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("reply", reply))
@@ -484,7 +532,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** AVATAR pe nahi — naam/text ke exact coordinates pe gesture tap */
     private fun clickRowTextArea(row: AccessibilityNodeInfo, name: String) {
         val nameNode: AccessibilityNodeInfo? = findLeafWithText(row, name, 0)
         if (nameNode != null) {
@@ -546,8 +593,6 @@ class AutoAccessibilityService : AccessibilityService() {
             dispatchGesture(g, null, null)
         } catch (e: Exception) { }
     }
-
-    // ---------------- INPUT / SEND FINDERS ----------------
 
     private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isEditable) return node
@@ -625,6 +670,7 @@ class AutoAccessibilityService : AccessibilityService() {
             if (reply.isNullOrBlank()) return@thread
             ChatHistory.add(this, sender, "them", newMessage)
             ChatHistory.add(this, sender, "me", reply)
+            ChatHistory.addMessaged(this, sender)
             handler.post { typeAndSend(reply) }
         }
     }
