@@ -44,6 +44,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private var casualIdx: Int = 0
     private var lastActionTime: Long = 0L
+    private var wrongPkgCount: Int = 0
 
     private val casuals: List<String> = listOf(
         "kya kar rahe ho aaj 😊",
@@ -85,6 +86,7 @@ class AutoAccessibilityService : AccessibilityService() {
     fun startQueue() {
         queueActive = true
         expectingChat = false
+        wrongPkgCount = 0
         lastActionTime = System.currentTimeMillis()
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -218,32 +220,36 @@ class AutoAccessibilityService : AccessibilityService() {
             if (!queueActive) return
             if (!Prefs.masterEnabled(this@AutoAccessibilityService)) return
             val pkg: String = Prefs.queuePkg(this@AutoAccessibilityService)
-            val root: AccessibilityNodeInfo? = rootInActiveWindow
-            val currentPkg: String? = root?.packageName?.toString()
 
+            // window na mile toh sirf wait - kuch mat karo
+            val root: AccessibilityNodeInfo? = rootInActiveWindow
+            if (root == null) {
+                qHandler.postDelayed(this, 2000)
+                return
+            }
+
+            val currentPkg: String? = root.packageName?.toString()
+
+            // doosre app pe hone ka pakka proof chahiye (3 baar)
             if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
+                wrongPkgCount++
+                if (wrongPkgCount < 3) {
+                    qHandler.postDelayed(this, 2000)
+                    return
+                }
                 dbg("PAUSED (user in other app)")
                 expectingChat = false
                 qHandler.postDelayed(this, 10000)
                 return
             }
-            if (currentPkg != null && currentPkg == packageName) {
+            wrongPkgCount = 0
+
+            if (currentPkg != pkg) {
                 qHandler.postDelayed(this, 3000)
                 return
             }
 
-            if (root == null || currentPkg != pkg) {
-                expectingChat = false
-                dbg("Opening " + pkg)
-                val intent: Intent? = packageManager.getLaunchIntentForPackage(pkg)
-                if (intent != null) {
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
-                }
-                qHandler.postDelayed(this, 5000)
-                return
-            }
-
+            // dialog aaye toh auto cancel (safety)
             val leaveDialog: AccessibilityNodeInfo? =
                 findNodeWithText(root, "are you sure to leave", 0)
             if (leaveDialog != null) {
@@ -277,15 +283,14 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // list pe hain? nahi toh wapas aao (sirf non-list se)
+            // list nahi hai toh sirf WAIT - back kabhi nahi
             if (!isOnList(root)) {
-                dbg("Other screen - back to list")
-                performGlobalAction(GLOBAL_ACTION_BACK)
-                qHandler.postDelayed(this, 2500)
+                dbg("Waiting (not list)")
+                qHandler.postDelayed(this, 3000)
                 return
             }
 
-            // LIST: sirf RED BADGE wale chats
+            // LIST: sirf RED BADGE wale
             dbg("Scanning badges...")
             val badged: List<Pair<AccessibilityNodeInfo, String>> = findBadgedRows(root)
             if (badged.isEmpty()) {
@@ -294,7 +299,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // minimum 20 sec per chat
             val elapsed: Long = System.currentTimeMillis() - lastActionTime
             if (elapsed < 20000) {
                 dbg("20s pace - waiting")
@@ -372,7 +376,7 @@ class AutoAccessibilityService : AccessibilityService() {
             handler.post { typeAndSend(reply) }
         }
     }
-        private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
@@ -523,7 +527,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return r.top
     }
 
-    /** sirf RED BADGE wale rows (1, 2... red circle) */
     private fun findBadgedRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
@@ -541,7 +544,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return out
     }
 
-    /** kya row mein right side number badge hai (1, 2...) */
     private fun scanBadge(node: AccessibilityNodeInfo, dw: Int, depth: Int): Boolean {
         if (depth > 10) return false
         val t: String? = node.text?.toString()?.trim()
