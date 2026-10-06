@@ -22,8 +22,7 @@
                 val cy: Int = (r.top + r.bottom) / 2
                 val cx: Int = (r.left + r.right) / 2
                 if (cy > dh * 0.20 && !looksLikeMeta(t)) {
-                    val mine: Boolean = cx > dw / 2
-                    out.add(Pair(t, mine))
+                    out.add(Pair(t, cx > dw / 2))
                 }
             }
         }
@@ -49,6 +48,16 @@
         return false
     }
 
+    private fun cleanForKeyboard(text: String): String {
+        val sb = StringBuilder()
+        for (ch in text) {
+            val c = ch.lowercaseChar()
+            if ((c in 'a'..'z') || (c in '0'..'9')) sb.append(c)
+            else if (ch == ' ' || ch == '?' || ch == '.' || ch == ',') sb.append(ch)
+        }
+        return sb.toString()
+    }
+
     private fun typeAndSend(reply: String) {
         lastReply = reply
         handler.postDelayed({
@@ -60,35 +69,78 @@
                 goNextOrBack()
                 return@postDelayed
             }
-            dbg("Typing...")
-            val args = Bundle()
-            args.putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                reply
-            )
+            dbg("Opening keyboard...")
             field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-            handler.postDelayed({ trySendClick(0) }, 1200)
-        }, 1000)
+            val fr = Rect()
+            field.getBoundsInScreen(fr)
+            tap(((fr.left + fr.right) / 2).toFloat(), ((fr.top + fr.bottom) / 2).toFloat())
+            handler.postDelayed({ typeWithKeyboard(cleanForKeyboard(lastReply)) }, 1300)
+        }, 800)
     }
 
-    private fun pasteFallback() {
-        val root: AccessibilityNodeInfo? = rootInActiveWindow ?: return
-        val field: AccessibilityNodeInfo? = findInput(root) ?: return
-        val clipboard: ClipboardManager =
-            getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("reply", lastReply))
-        field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-        field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-        })
-        field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    private fun typeWithKeyboard(text: String) {
+        thread {
+            var i = 0
+            while (i < text.length) {
+                val ch = text[i]
+                val keyName: String = if (ch == ' ') "space" else ch.toString()
+                val key: AccessibilityNodeInfo? = waitForKey(keyName)
+                if (key == null) {
+                    dbg("Key not found: " + ch)
+                } else {
+                    val r = Rect()
+                    key.getBoundsInScreen(r)
+                    tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
+                    Thread.sleep(120L + kotlin.random.Random.nextLong(0, 100))
+                }
+                i++
+            }
+            dbg("Typed, clicking SEND")
+            handler.post { trySendClick(0) }
+        }
+    }
+
+    private fun waitForKey(key: String): AccessibilityNodeInfo? {
+        var tries = 0
+        while (tries < 6) {
+            val root: AccessibilityNodeInfo = rootInActiveWindow ?: return null
+            val node: AccessibilityNodeInfo? = findKeyOnKeyboard(root, key, 0)
+            if (node != null) return node
+            tries++
+            Thread.sleep(250)
+        }
+        return null
+    }
+
+    private fun findKeyOnKeyboard(
+        node: AccessibilityNodeInfo,
+        key: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 20) return null
+        val dh: Int = resources.displayMetrics.heightPixels
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val cy: Int = (r.top + r.bottom) / 2
+        if (cy > dh * 0.5) {
+            val desc: String? = node.contentDescription?.toString()?.lowercase()?.trim()
+            val txt: String? = node.text?.toString()?.lowercase()?.trim()
+            if ((desc != null && desc == key.lowercase()) ||
+                (txt != null && txt == key.lowercase())) {
+                return node
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findKeyOnKeyboard(c, key, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
     }
 
     private fun trySendClick(attempt: Int) {
-        if (attempt == 5) {
-            pasteFallback()
-        }
         if (attempt > 12) {
             dbg("Send button NOT found")
             goNextOrBack()
@@ -204,9 +256,8 @@
             collectLeafTexts(node, texts, 0)
             if (texts.size >= 2) {
                 val name: String = texts[0]
-                val preview: String = texts[1]
                 if (name.length in 2..30 && !name.contains(":")) {
-                    candidates.add(Triple(node, name, preview))
+                    candidates.add(Triple(node, name, texts[1]))
                 }
             }
         }
@@ -315,13 +366,11 @@
         val cx: Int = (r.left + r.right) / 2
         val cy: Int = (r.top + r.bottom) / 2
         val inSendZone: Boolean = cx > dw * 0.55 && cy > dh * 0.70
-
         if (inSendZone && node.isEnabled && node.isClickable &&
             (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))
         ) {
             return node
         }
-
         for (i in 0 until node.childCount) {
             val child: AccessibilityNodeInfo? = node.getChild(i)
             if (child != null) {
@@ -337,36 +386,12 @@
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
-
         if (queueActive && pkg == Prefs.queuePkg(this) &&
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        ) {
             qHandler.removeCallbacks(queueStep)
             qHandler.postDelayed(queueStep, 800)
-            return
-        }
-
-        if (!Prefs.isPackageEnabled(this, pkg)) return
-
-        val pending: Triple<String, android.app.PendingIntent, String>? =
-            ReplyService.pendingChat
-        if (pending == null) return
-        ReplyService.pendingChat = null
-
-        val newMessage: String = pending.first
-        val sender: String = pending.third
-
-        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
-        val lines: List<String> = scrapeMessages(root).map { it.first }
-        root.recycle()
-
-        thread {
-            val reply: String? = try {
-                ReplyGenerator.generate(this, sender, lines, newMessage)
-            } catch (e: Exception) { null }
-            if (reply.isNullOrBlank()) return@thread
-            ChatHistory.add(this, sender, "them", newMessage)
-            ChatHistory.add(this, sender, "me", reply)
-            handler.post { typeAndSend(reply) }
         }
     }
 
