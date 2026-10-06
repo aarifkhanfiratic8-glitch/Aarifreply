@@ -39,4 +39,9 @@ object Prefs {
     }
 
     fun apiKey(c: Context) = sp(c).getString("apiKey", "") ?: ""
+
+    fun queuePkg(c: Context) = sp(c).getString("queuePkg", "com.toki.android") ?: "com.toki.android"
+
+    fun queueIntervalMs(c: Context): Long =
+        (sp(c).getInt("queueSec", 12).coerceAtLeast(5)) * 1000L
 }
