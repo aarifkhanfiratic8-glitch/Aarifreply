@@ -142,6 +142,40 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
         })
 
+        root.addView(label("QUEUE MODE (list se sabko ek-ek karke reply):"))
+
+        val etQueuePkg = editText("Queue package (default com.toki.android)")
+        etQueuePkg.setText(sp.getString("queuePkg", "com.toki.android"))
+        root.addView(etQueuePkg)
+
+        val etQueueSec = editText("Interval seconds (default 12)", InputType.TYPE_CLASS_NUMBER)
+        etQueueSec.setText(sp.getInt("queueSec", 12).toString())
+        root.addView(etQueueSec)
+
+        root.addView(button("SAVE QUEUE SETTINGS") {
+            sp.edit()
+                .putString("queuePkg", etQueuePkg.text.toString().trim().ifBlank { "com.toki.android" })
+                .putInt("queueSec", etQueueSec.text.toString().toIntOrNull() ?: 12)
+                .apply()
+            Toast.makeText(this, "Queue settings saved", Toast.LENGTH_SHORT).show()
+        })
+
+        root.addView(button("START QUEUE (screen ON rakhna, app khud sab handle karega)") {
+            sp.edit()
+                .putString("queuePkg", etQueuePkg.text.toString().trim().ifBlank { "com.toki.android" })
+                .putInt("queueSec", etQueueSec.text.toString().toIntOrNull() ?: 12)
+                .apply()
+            AutoAccessibilityService.instance?.startQueue()
+            Toast.makeText(this, "QUEUE STARTED - screen ON rakhna!", Toast.LENGTH_LONG).show()
+            refreshStatus()
+        })
+
+        root.addView(button("STOP QUEUE") {
+            AutoAccessibilityService.instance?.stopQueue()
+            Toast.makeText(this, "Queue stopped", Toast.LENGTH_SHORT).show()
+            refreshStatus()
+        })
+
         root.addView(button("Test Reply Generator") {
             val reply = ReplyGenerator.generate(this, "Test User",
                 listOf("Them: hi", "You: hey!"), "kaise ho?")
@@ -152,13 +186,16 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Setup Steps")
                 .setMessage(
-                    "1. Notification Access ON karo\n" +
-                    "2. Accessibility ON karo\n" +
-                    "3. Apna app tick karo (ya custom package add karo)\n" +
-                    "4. Smart memory ON rakho\n" +
-                    "5. API key + persona dalo (platform.openai.com)\n" +
-                    "6. Ab message aate hi auto-reply!\n\n" +
-                    "Package name: Settings - Apps - app select - neeche dikhta hai."
+                    "QUEUE MODE (sabse asaan):\n" +
+                    "1. Notification Access ON + Accessibility ON\n" +
+                    "2. API key + persona dalo, Save\n" +
+                    "3. Queue package = com.toki.android confirm karo\n" +
+                    "4. Master switch ON\n" +
+                    "5. Phone ki screen ON rakho (charge pe laga do)\n" +
+                    "6. START QUEUE dabao\n" +
+                    "7. App khud Toki khole gi, har pending chat ka\n" +
+                    "   reply degi, back ayegi, agle ka karegi!\n\n" +
+                    "Rokna ho toh STOP QUEUE dabao."
                 )
                 .setPositiveButton("OK", null)
                 .show()
@@ -171,13 +208,18 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::tvStatus.isInitialized) {
-            val notifOn = isNotificationServiceEnabled()
-            val accOn = AutoAccessibilityService.instance != null
-            tvStatus.text =
-                "Notification Access: " + (if (notifOn) "ON" else "OFF") + "\n" +
-                "Accessibility: " + (if (accOn) "ON" else "OFF")
-        }
+        refreshStatus()
+    }
+
+    private fun refreshStatus() {
+        if (!::tvStatus.isInitialized) return
+        val notifOn = isNotificationServiceEnabled()
+        val accOn = AutoAccessibilityService.instance != null
+        val queue = AutoAccessibilityService.queueActive
+        tvStatus.text =
+            "Notification Access: " + (if (notifOn) "ON" else "OFF") + "\n" +
+            "Accessibility: " + (if (accOn) "ON" else "OFF") + "\n" +
+            "Queue Mode: " + (if (queue) "RUNNING" else "OFF")
     }
 
     private fun isNotificationServiceEnabled(): Boolean {
