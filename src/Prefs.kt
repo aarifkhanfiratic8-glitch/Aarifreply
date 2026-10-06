@@ -22,6 +22,8 @@ object Prefs {
 
     fun persona(c: Context) = sp(c).getString("persona", "") ?: ""
 
+    fun nudgeEnabled(c: Context) = sp(c).getBoolean("nudge", true)
+
     fun isPackageEnabled(c: Context, pkg: String): Boolean {
         val set = sp(c).getStringSet("apps", setOf("com.whatsapp")) ?: return false
         if (pkg in set) return true
