@@ -106,8 +106,7 @@ class AutoAccessibilityService : AccessibilityService() {
         updatePauseBtn()
         dbg("Queue OFF")
     }
-
-    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+        private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
         b.textSize = 11f
@@ -210,8 +209,7 @@ class AutoAccessibilityService : AccessibilityService() {
         gatherRows(root, c, 0)
         return c.size >= 4
     }
-
-    private val queueStep: Runnable = object : Runnable {
+        private val queueStep: Runnable = object : Runnable {
         override fun run() {
             if (!queueActive) return
             if (!Prefs.masterEnabled(this@AutoAccessibilityService)) return
@@ -359,7 +357,8 @@ class AutoAccessibilityService : AccessibilityService() {
             handler.post { typeAndSend(reply) }
         }
     }
-        private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+
+    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
@@ -500,8 +499,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         return null
     }
-
-    private fun trySendClick(attempt: Int) {
+        private fun trySendClick(attempt: Int) {
         if (attempt > 12) {
             dbg("Send button NOT found")
             goNextOrBack()
@@ -758,4 +756,3 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
-
