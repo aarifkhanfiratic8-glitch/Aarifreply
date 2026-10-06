@@ -242,7 +242,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // dialog aaya toh app khud cancel kare (tumhe kuch nahi karna)
             val leaveDialog: AccessibilityNodeInfo? =
                 findNodeWithText(root, "are you sure to leave", 0)
             if (leaveDialog != null) {
@@ -256,11 +255,9 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // chat khulne ka wait chal raha tha
             if (expectingChat) {
                 expectingChat = false
                 if (!isInChat(root)) {
-                    // tap fail - LIST pe hi rehna hai, back NAHI
                     dbg("Chat not opened - rescanning")
                     qHandler.postDelayed(this, 4000)
                     return
@@ -271,7 +268,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // kahin chat khula mila -> analyze
             if (isInChat(root)) {
                 dbg("In chat - analyzing")
                 armWatchdog()
@@ -279,7 +275,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // koi AUR screen pe hain -> list pe wapas
             if (!isOnList(root)) {
                 dbg("Other screen - back to list")
                 performGlobalAction(GLOBAL_ACTION_BACK)
@@ -287,7 +282,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // LIST pe hain - kaam yahin se
             dbg("Scanning list...")
             val row: Pair<AccessibilityNodeInfo, String>? = findPendingRow(root)
             if (row != null) {
@@ -383,8 +377,7 @@ class AutoAccessibilityService : AccessibilityService() {
             handler.post { typeAndSend(reply) }
         }
     }
-
-    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+        private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
@@ -508,7 +501,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return false
     }
 
-    /** back SIRF tab jab chat khula ho; list pe back kabhi nahi */
     private fun backToListIfInChat() {
         qHandler.removeCallbacksAndMessages(null)
         val root: AccessibilityNodeInfo? = rootInActiveWindow
@@ -544,4 +536,211 @@ class AutoAccessibilityService : AccessibilityService() {
         gatherRows(root, candidates, 0)
         candidates.sortBy { rowTop(it.first) }
         val out = ArrayList<Pair<AccessibilityNodeInfo, String>>()
-        for (entry in candidates
+        for (entry in candidates) {
+            if (isSystemRow(entry.second)) continue
+            if (entry.third.contains("[Match]")) continue
+            if (entry.third.contains("birthday", ignoreCase = true)) continue
+            out.add(Pair(entry.first, entry.second))
+            if (out.size >= n) break
+        }
+        return out
+    }
+
+    private fun findPendingRow(root: AccessibilityNodeInfo): Pair<AccessibilityNodeInfo, String>? {
+        val candidates = ArrayList<Triple<AccessibilityNodeInfo, String, String>>()
+        gatherRows(root, candidates, 0)
+        candidates.sortByDescending { it.first.childCount }
+        for (entry in candidates) {
+            val node: AccessibilityNodeInfo = entry.first
+            val name: String = entry.second
+            val preview: String = entry.third
+            if (isSystemRow(name)) continue
+            if (preview.contains("[Match]")) continue
+            if (preview.contains("birthday", ignoreCase = true)) continue
+            val lastMe: String? = ChatHistory.lastMeText(this, name)
+            if (lastMe == null || preview != lastMe) {
+                return Pair(node, name)
+            }
+        }
+        return null
+    }
+
+    private fun gatherRows(
+        node: AccessibilityNodeInfo,
+        candidates: MutableList<Triple<AccessibilityNodeInfo, String, String>>,
+        depth: Int
+    ) {
+        if (depth > 14) return
+        if (node.isClickable) {
+            val texts = ArrayList<String>()
+            collectLeafTexts(node, texts, 0)
+            if (texts.size >= 2) {
+                val name: String = texts[0]
+                val preview: String = texts[1]
+                if (name.length in 2..30 && !name.contains(":")) {
+                    candidates.add(Triple(node, name, preview))
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) gatherRows(child, candidates, depth + 1)
+        }
+    }
+
+    private fun collectLeafTexts(node: AccessibilityNodeInfo, out: MutableList<String>, depth: Int) {
+        if (depth > 9) return
+        val t: String? = node.text?.toString()?.trim()
+        if (t != null && t.isNotEmpty() && node.childCount == 0) {
+            out.add(t)
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectLeafTexts(c, out, depth + 1)
+        }
+    }
+
+    private fun clickRowTextArea(row: AccessibilityNodeInfo, name: String) {
+        val nameNode: AccessibilityNodeInfo? = findLeafWithText(row, name, 0)
+        if (nameNode != null) {
+            val r = Rect()
+            nameNode.getBoundsInScreen(r)
+            dbg("Tapped: " + name)
+            tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
+            return
+        }
+        val r2 = Rect()
+        row.getBoundsInScreen(r2)
+        dbg("Tapped (fallback)")
+        tap((r2.left + r2.width() * 0.55f), ((r2.top + r2.bottom) / 2).toFloat())
+    }
+
+    private fun findLeafWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 12) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.trim() == text && node.childCount == 0) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    private fun findNodeWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.contains(text, ignoreCase = true)) return node
+        val cd: String? = node.contentDescription?.toString()
+        if (cd != null && cd.contains(text, ignoreCase = true)) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findNodeWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    private fun tap(x: Float, y: Float) {
+        try {
+            val p = Path()
+            p.moveTo(x, y)
+            val g: GestureDescription = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(p, 0, 60))
+                .build()
+            dispatchGesture(g, null, null)
+        } catch (e: Exception) { }
+    }
+
+    private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findInput(child)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun findSendButton(node: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val desc: String = node.contentDescription?.toString()?.lowercase() ?: ""
+        val cls: String = node.className?.toString() ?: ""
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val dw: Int = resources.displayMetrics.widthPixels
+        val dh: Int = resources.displayMetrics.heightPixels
+        val cx: Int = (r.left + r.right) / 2
+        val cy: Int = (r.top + r.bottom) / 2
+        val inSendZone: Boolean = cx > dw * 0.55 && cy > dh * 0.70
+
+        if (inSendZone && node.isEnabled && node.isClickable &&
+            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))
+        ) {
+            return node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findSendButton(child, depth + 1)
+                if (found != null) return found
+            }
+        }
+        if (inSendZone && node.isEnabled && node.isClickable && node.childCount == 0) {
+            return node
+        }
+        return null
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg: String = event.packageName?.toString() ?: return
+
+        if (queueActive && pkg == Prefs.queuePkg(this) &&
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            qHandler.removeCallbacks(queueStep)
+            qHandler.postDelayed(queueStep, 800)
+            return
+        }
+
+        if (!Prefs.isPackageEnabled(this, pkg)) return
+
+        val pending: Triple<String, android.app.PendingIntent, String>? =
+            ReplyService.pendingChat
+        if (pending == null) return
+        ReplyService.pendingChat = null
+
+        val newMessage: String = pending.first
+        val sender: String = pending.third
+
+        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
+        val lines: List<String> = scrapeMessages(root).map { it.first }
+        root.recycle()
+
+        thread {
+            val reply: String? = try {
+                ReplyGenerator.generate(this, sender, lines, newMessage)
+            } catch (e: Exception) { null }
+            if (reply.isNullOrBlank()) return@thread
+            ChatHistory.add(this, sender, "them", newMessage)
+            ChatHistory.add(this, sender, "me", reply)
+            handler.post { typeAndSend(reply) }
+        }
+    }
+
+    override fun onInterrupt() { }
+}
