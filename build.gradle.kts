@@ -19,6 +19,8 @@ android {
         getByName("main") {
             manifest.srcFile("AndroidManifest.xml")
             java.srcDir("src")
+            res.srcDirs("res")
+
         }
     }
 
