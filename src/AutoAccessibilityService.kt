@@ -6,12 +6,19 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
+import android.widget.LinearLayout
 import kotlin.concurrent.thread
 
 class AutoAccessibilityService : AccessibilityService() {
@@ -26,6 +33,8 @@ class AutoAccessibilityService : AccessibilityService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var expectingChat = false
     private var lastSender = ""
+    private var wm: WindowManager? = null
+    private var overlayView: View? = null
 
     override fun onServiceConnected() {
         instance = this
@@ -34,7 +43,6 @@ class AutoAccessibilityService : AccessibilityService() {
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-            
             notificationTimeout = 100
         })
     }
@@ -46,10 +54,11 @@ class AutoAccessibilityService : AccessibilityService() {
         expectingChat = false
         qHandler.removeCallbacksAndMessages(null)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock?.release()
+        try { wakeLock?.release() } catch (_: Exception) {}
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "autoreply:queue").apply {
             acquire(60 * 60 * 1000L)
         }
+        showOverlay()
         qHandler.postDelayed(queueStep, 1500)
     }
 
@@ -59,15 +68,89 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) {}
         wakeLock = null
+        hideOverlay()
     }
+
+    // ---------------- FLOATING BUTTONS ----------------
+
+    private fun showOverlay() {
+        if (overlayView != null) return
+        try {
+            wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(6, 6, 6, 6)
+            }
+            fun ob(text: String, color: Int, action: () -> Unit): Button =
+                Button(this).apply {
+                    this.text = text
+                    textSize = 11f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setBackgroundColor(color)
+                    setOnClickListener { action() }
+                }
+            box.addView(ob("REPLY", 0xFF2E7D32.toInt()) { replyCurrentChat() })
+            box.addView(ob("NEXT", 0xFF1565C0.toInt()) { manualNext() })
+            box.addView(ob("BACK", 0xFFF9A825.toInt()) { performGlobalAction(GLOBAL_ACTION_BACK) })
+            box.addView(ob("STOP", 0xFFC62828.toInt()) { stopQueue() })
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                x = 10
+                y = 250
+            }
+            overlayView = box
+            wm?.addView(box, params)
+        } catch (e: Exception) { }
+    }
+
+    private fun hideOverlay() {
+        try { overlayView?.let { wm?.removeView(it) } } catch (e: Exception) { }
+        overlayView = null
+    }
+
+    private fun replyCurrentChat() {
+        val root = rootInActiveWindow ?: return
+        if (root.packageName?.toString() != Prefs.queuePkg(this)) return
+        handleOpenChat(root, lastSender.ifBlank { "friend" })
+    }
+
+    private fun manualNext() {
+        qHandler.removeCallbacksAndMessages(null)
+        val root = rootInActiveWindow
+        if (root != null && root.packageName?.toString() == Prefs.queuePkg(this) && findInput(root) != null) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            qHandler.postDelayed(queueStep, 1800)
+        } else {
+            qHandler.postDelayed(queueStep, 600)
+        }
+    }
+
+    // ---------------- QUEUE STEP ----------------
 
     private val queueStep = object : Runnable {
         override fun run() {
             if (!queueActive || !Prefs.masterEnabled(this@AutoAccessibilityService)) return
             val pkg = Prefs.queuePkg(this@AutoAccessibilityService)
             val root = rootInActiveWindow
+            val currentPkg = root?.packageName?.toString()
 
-            if (root == null || root.packageName?.toString() != pkg) {
+            // USER kisi aur app mein hai ya settings mein hai — RUKO
+            if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
+                qHandler.postDelayed(this, Prefs.queueIntervalMs(this@AutoAccessibilityService))
+                return
+            }
+            if (currentPkg == packageName) {
+                qHandler.postDelayed(this, 3000)
+                return
+            }
+
+            if (root == null || currentPkg != pkg) {
                 expectingChat = false
                 val intent = packageManager.getLaunchIntentForPackage(pkg)
                 if (intent != null) {
@@ -79,28 +162,30 @@ class AutoAccessibilityService : AccessibilityService() {
             }
 
             if (expectingChat) {
-                // chat khula hai — reply karo
                 val sender = lastSender
                 expectingChat = false
                 handleOpenChat(root, sender)
-                qHandler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 5000)
-                qHandler.postDelayed(this, 11000)
+                // watchdog: agar 35s mein kuch na ho to force back
+                qHandler.postDelayed({
+                    if (queueActive) {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                        qHandler.postDelayed(queueStep, 2500)
+                    }
+                }, 35000)
                 return
             }
 
-            // list screen hai — pending row dhundo
             val row = findPendingRow(root)
             root.recycle()
             if (row != null) {
                 lastSender = row.second
                 if (row.first.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                     expectingChat = true
-                    qHandler.postDelayed(this, 9000)
+                    qHandler.postDelayed(this, 10000)
                 } else {
                     qHandler.postDelayed(this, 3000)
                 }
             } else {
-                // koi pending nahi — naye message ka wait
                 qHandler.postDelayed(this, Prefs.queueIntervalMs(this@AutoAccessibilityService))
             }
         }
@@ -116,7 +201,7 @@ class AutoAccessibilityService : AccessibilityService() {
             if (reply.isNullOrBlank()) return@thread
             ChatHistory.add(this, sender, "them", newMsg)
             ChatHistory.add(this, sender, "me", reply)
-            handler.post { typeAndSend(reply, doBack = false) }
+            handler.post { typeAndSend(reply, thenBack = true) }
         }
     }
 
@@ -124,10 +209,10 @@ class AutoAccessibilityService : AccessibilityService() {
         if (name.contains("TOKI TEAM", ignoreCase = true)) return true
         if (name == "My chat room" || name == "Moments" || name == "Contacts") return true
         if (name.contains("Join a family") || name.contains("Coins")) return true
+        if (name.contains("Interaction notifications")) return true
         return false
     }
 
-    /** list se wo row dhundo jiska last msg humara reply nahi hai */
     private fun findPendingRow(root: AccessibilityNodeInfo): Pair<AccessibilityNodeInfo, String>? {
         val candidates = mutableListOf<Triple<AccessibilityNodeInfo, String, String>>()
         fun gatherTexts(node: AccessibilityNodeInfo, out: MutableList<String>, depth: Int) {
@@ -165,7 +250,7 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // ---------------- NORMAL MODE (notification wala) ----------------
+    // ---------------- NORMAL MODE ----------------
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: return
@@ -199,15 +284,17 @@ class AutoAccessibilityService : AccessibilityService() {
             ChatHistory.add(this, sender, "them", newMessage)
             ChatHistory.add(this, sender, "me", reply)
 
-            handler.post { typeAndSend(reply, doBack = true) }
+            handler.post { typeAndSend(reply, thenBack = true) }
         }
     }
 
-    private fun typeAndSend(reply: String, doBack: Boolean) {
+    // ---------------- TYPE + SEND (ab back sirf send ke BAAD) ----------------
+
+    private fun typeAndSend(reply: String, thenBack: Boolean) {
         handler.postDelayed({
             val root = rootInActiveWindow ?: return@postDelayed
             val field = findInput(root) ?: run {
-                if (doBack) performGlobalAction(GLOBAL_ACTION_BACK)
+                if (thenBack) backAndNext()
                 return@postDelayed
             }
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -222,15 +309,58 @@ class AutoAccessibilityService : AccessibilityService() {
                 field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             }
 
-            handler.postDelayed({
-                val root2 = rootInActiveWindow
-                val send = root2?.let { findSendButton(it) }
-                send?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (doBack) {
-                    handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 1000)
-                }
-            }, 1200)
+            handler.postDelayed({ trySendClick(0, thenBack) }, 900)
         }, 1200)
+    }
+
+    private fun trySendClick(attempt: Int, thenBack: Boolean) {
+        if (attempt > 10) {
+            if (thenBack) backAndNext()
+            return
+        }
+        val root = rootInActiveWindow ?: return
+        val send = findSendButton(root)
+        if (send != null) {
+            val ok = send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (ok) {
+                handler.postDelayed({
+                    if (thenBack) backAndNext()
+                }, 1300)
+                return
+            }
+        }
+        handler.postDelayed({ trySendClick(attempt + 1, thenBack) }, 500)
+    }
+
+    private fun backAndNext() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        qHandler.postDelayed(queueStep, 2500)
+    }
+
+    /** sirf screen ke bottom-right zone mein send button — profile/avatar nahi */
+    private fun findSendButton(node: AccessibilityNodeInfo, depth: Int = 0): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val cls = node.className?.toString() ?: ""
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val dw = resources.displayMetrics.widthPixels
+        val dh = resources.displayMetrics.heightPixels
+        val cx = (r.left + r.right) / 2
+        val cy = (r.top + r.bottom) / 2
+        val inSendZone = cx > dw * 0.55 && cy > dh * 0.70
+
+        if (inSendZone && node.isEnabled && node.isClickable &&
+            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))) return node
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findSendButton(child, depth + 1)
+            if (found != null) return found
+        }
+        // last resort: zone mein koi bhi clickable enabled node
+        if (inSendZone && node.isEnabled && node.isClickable && node.childCount == 0) return node
+        return null
     }
 
     private fun scrapeChatTexts(root: AccessibilityNodeInfo): List<String> {
@@ -256,19 +386,6 @@ class AutoAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findInput(child)
-            if (found != null) return found
-        }
-        return null
-    }
-
-    private fun findSendButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-        val cls = node.className?.toString() ?: ""
-        if (node.isEnabled &&
-            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findSendButton(child)
             if (found != null) return found
         }
         return null
