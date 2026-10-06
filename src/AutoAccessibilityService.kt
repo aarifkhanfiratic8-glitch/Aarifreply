@@ -45,6 +45,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private var casualIdx: Int = 0
     private var lastActionTime: Long = 0L
     private var wrongPkgCount: Int = 0
+    private var lastReply: String = ""
 
     private val casuals: List<String> = listOf(
         "kya kar rahe ho aaj 😊",
@@ -205,7 +206,11 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun isInChat(root: AccessibilityNodeInfo): Boolean {
-        return findInput(root) != null
+        val field: AccessibilityNodeInfo? = findInput(root) ?: return false
+        val r = Rect()
+        field.getBoundsInScreen(r)
+        val dh: Int = resources.displayMetrics.heightPixels
+        return r.top > dh * 0.55
     }
 
     private fun isOnList(root: AccessibilityNodeInfo): Boolean {
@@ -221,7 +226,6 @@ class AutoAccessibilityService : AccessibilityService() {
             if (!Prefs.masterEnabled(this@AutoAccessibilityService)) return
             val pkg: String = Prefs.queuePkg(this@AutoAccessibilityService)
 
-            // window na mile toh sirf wait - kuch mat karo
             val root: AccessibilityNodeInfo? = rootInActiveWindow
             if (root == null) {
                 qHandler.postDelayed(this, 2000)
@@ -230,7 +234,6 @@ class AutoAccessibilityService : AccessibilityService() {
 
             val currentPkg: String? = root.packageName?.toString()
 
-            // doosre app pe hone ka pakka proof chahiye (3 baar)
             if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
                 wrongPkgCount++
                 if (wrongPkgCount < 3) {
@@ -249,7 +252,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // dialog aaye toh auto cancel (safety)
             val leaveDialog: AccessibilityNodeInfo? =
                 findNodeWithText(root, "are you sure to leave", 0)
             if (leaveDialog != null) {
@@ -283,14 +285,14 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // list nahi hai toh sirf WAIT - back kabhi nahi
             if (!isOnList(root)) {
-                dbg("Waiting (not list)")
-                qHandler.postDelayed(this, 3000)
+                dbg("Other screen - back to list")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                expectingChat = false
+                qHandler.postDelayed(this, 2500)
                 return
             }
 
-            // LIST: sirf RED BADGE wale
             dbg("Scanning badges...")
             val badged: List<Pair<AccessibilityNodeInfo, String>> = findBadgedRows(root)
             if (badged.isEmpty()) {
@@ -428,6 +430,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun typeAndSend(reply: String) {
+        lastReply = reply
         handler.postDelayed({
             val root: AccessibilityNodeInfo? = rootInActiveWindow
             if (root == null) return@postDelayed
@@ -437,26 +440,35 @@ class AutoAccessibilityService : AccessibilityService() {
                 goNextOrBack()
                 return@postDelayed
             }
-            dbg("Pasting...")
-            val clipboard: ClipboardManager =
-                getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("reply", reply))
-
+            dbg("Typing...")
+            val args = Bundle()
+            args.putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                reply
+            )
             field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val pasted: Boolean = field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-            if (!pasted) {
-                val args = Bundle()
-                args.putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    reply
-                )
-                field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-            }
-            handler.postDelayed({ trySendClick(0) }, 900)
+            field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            handler.postDelayed({ trySendClick(0) }, 1200)
         }, 1000)
     }
 
+    private fun pasteFallback() {
+        val root: AccessibilityNodeInfo? = rootInActiveWindow ?: return
+        val field: AccessibilityNodeInfo? = findInput(root) ?: return
+        val clipboard: ClipboardManager =
+            getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("reply", lastReply))
+        field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+        })
+        field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
     private fun trySendClick(attempt: Int) {
+        if (attempt == 5) {
+            pasteFallback()
+        }
         if (attempt > 12) {
             dbg("Send button NOT found")
             goNextOrBack()
