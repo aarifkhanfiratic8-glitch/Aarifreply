@@ -41,19 +41,6 @@ class AutoAccessibilityService : AccessibilityService() {
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
 
-    private var nudgeMode: Boolean = false
-    private var nudgeTargetIdx: Int = 0
-    private var nudgeTextIdx: Int = 0
-    private var lastActionTime: Long = 0L
-
-    private val nudges: List<String> = listOf(
-        "hello, kyu reply nahi de rhe ho 😊",
-        "kya hua yrr? busy ho kya",
-        "so gye kya? 😅",
-        "reply kar do na yrr, intezaar hai",
-        "kahan gayab ho gaye aap 😄"
-    )
-
     override fun onServiceConnected() {
         instance = this
         val info: AccessibilityServiceInfo = AccessibilityServiceInfo()
@@ -72,6 +59,11 @@ class AutoAccessibilityService : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopQueue()
+        super.onTaskRemoved(rootIntent)
+    }
+
     private fun dbg(msg: String) {
         handler.post {
             try { debugText?.text = msg } catch (e: Exception) { }
@@ -83,8 +75,6 @@ class AutoAccessibilityService : AccessibilityService() {
     fun startQueue() {
         queueActive = true
         expectingChat = false
-        nudgeMode = false
-        lastActionTime = System.currentTimeMillis()
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         try { wakeLock?.release() } catch (_: Exception) { }
@@ -101,7 +91,6 @@ class AutoAccessibilityService : AccessibilityService() {
     fun stopQueue() {
         queueActive = false
         expectingChat = false
-        nudgeMode = false
         qHandler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
@@ -109,7 +98,7 @@ class AutoAccessibilityService : AccessibilityService() {
         dbg("Queue OFF")
     }
 
-    // ---------------- OVERLAY (sirf ON/OFF button) ----------------
+    // ---------------- OVERLAY (sirf ON/OFF) ----------------
 
     private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
@@ -190,7 +179,6 @@ class AutoAccessibilityService : AccessibilityService() {
             if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
                 dbg("PAUSED (user in other app)")
                 expectingChat = false
-                nudgeMode = false
                 qHandler.postDelayed(this, 10000)
                 return
             }
@@ -201,7 +189,6 @@ class AutoAccessibilityService : AccessibilityService() {
 
             if (root == null || currentPkg != pkg) {
                 expectingChat = false
-                nudgeMode = false
                 dbg("Opening " + pkg)
                 val intent: Intent? = packageManager.getLaunchIntentForPackage(pkg)
                 if (intent != null) {
@@ -214,6 +201,14 @@ class AutoAccessibilityService : AccessibilityService() {
 
             if (expectingChat) {
                 expectingChat = false
+                // CONFIRM: kya sach mein chat khula hai? (input box hona chahiye)
+                val field: AccessibilityNodeInfo? = findInput(root)
+                if (field == null) {
+                    dbg("Chat not opened - going back, retry")
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    qHandler.postDelayed(this, 3000)
+                    return
+                }
                 dbg("Chat opened: " + lastSender)
                 armWatchdog()
                 analyzeChat(root)
@@ -224,44 +219,15 @@ class AutoAccessibilityService : AccessibilityService() {
             val row: Pair<AccessibilityNodeInfo, String>? = findPendingRow(root)
             if (row != null) {
                 lastSender = row.second
-                nudgeMode = false
                 dbg("Pending: " + row.second)
                 clickRowTextArea(row.first, row.second)
                 expectingChat = true
                 qHandler.removeCallbacksAndMessages(null)
                 qHandler.postDelayed(this, 12000)
-                return
+            } else {
+                dbg("No pending - waiting")
+                qHandler.postDelayed(this, Prefs.queueIntervalMs(this@AutoAccessibilityService))
             }
-
-            // koi pending nahi — 20 sec rule: last 30 ko nudge karo
-            if (Prefs.nudgeEnabled(this@AutoAccessibilityService)) {
-                val elapsed: Long = System.currentTimeMillis() - lastActionTime
-                if (elapsed < 20000) {
-                    qHandler.postDelayed(this, 20000 - elapsed)
-                    return
-                }
-                val targets: List<String> = ChatHistory.recentSenders(this@AutoAccessibilityService)
-                if (targets.isNotEmpty()) {
-                    val target: String = targets[nudgeTargetIdx % targets.size]
-                    nudgeTargetIdx++
-                    val node: AccessibilityNodeInfo? = findNodeWithText(root, target, 0)
-                    if (node != null) {
-                        val r = Rect()
-                        node.getBoundsInScreen(r)
-                        lastSender = target
-                        nudgeMode = true
-                        dbg("Nudge: " + target)
-                        tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
-                        expectingChat = true
-                        qHandler.removeCallbacksAndMessages(null)
-                        qHandler.postDelayed(this, 12000)
-                        return
-                    }
-                }
-            }
-
-            dbg("No pending - waiting")
-            qHandler.postDelayed(this, 10000)
         }
     }
 
@@ -287,28 +253,12 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         val last: Pair<String, Boolean> = msgs[msgs.size - 1]
         if (last.second) {
-            if (nudgeMode) {
-                nudgeMode = false
-                dbg("Sending nudge")
-                sendNudgeText()
-            } else {
-                dbg("Last msg is OURS - skip")
-                goNextOrBack()
-            }
+            dbg("Last msg is OURS - skip")
+            goNextOrBack()
             return
         }
-        nudgeMode = false
         dbg("Their msg - replying")
         handleTheirMessage(msgs, lastSender)
-    }
-
-    private fun sendNudgeText() {
-        val msg: String = nudges[nudgeTextIdx % nudges.size]
-        nudgeTextIdx++
-        lastActionTime = System.currentTimeMillis()
-        ChatHistory.add(this, lastSender, "me", msg)
-        ChatHistory.addMessaged(this, lastSender)
-        typeAndSend(msg)
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
@@ -326,10 +276,8 @@ class AutoAccessibilityService : AccessibilityService() {
                 handler.post { goNextOrBack() }
                 return@thread
             }
-            lastActionTime = System.currentTimeMillis()
             ChatHistory.add(this, sender, "them", newMsg)
             ChatHistory.add(this, sender, "me", reply)
-            ChatHistory.addMessaged(this, sender)
             handler.post { typeAndSend(reply) }
         }
     }
@@ -537,11 +485,13 @@ class AutoAccessibilityService : AccessibilityService() {
         if (nameNode != null) {
             val r = Rect()
             nameNode.getBoundsInScreen(r)
+            dbg("Tapped: " + name)
             tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
             return
         }
         val r2 = Rect()
         row.getBoundsInScreen(r2)
+        dbg("Tapped (fallback)")
         tap((r2.left + r2.width() * 0.55f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
@@ -597,83 +547,4 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isEditable) return node
         for (i in 0 until node.childCount) {
-            val child: AccessibilityNodeInfo? = node.getChild(i)
-            if (child != null) {
-                val found: AccessibilityNodeInfo? = findInput(child)
-                if (found != null) return found
-            }
-        }
-        return null
-    }
-
-    private fun findSendButton(node: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
-        if (depth > 14) return null
-        val desc: String = node.contentDescription?.toString()?.lowercase() ?: ""
-        val cls: String = node.className?.toString() ?: ""
-        val r = Rect()
-        node.getBoundsInScreen(r)
-        val dw: Int = resources.displayMetrics.widthPixels
-        val dh: Int = resources.displayMetrics.heightPixels
-        val cx: Int = (r.left + r.right) / 2
-        val cy: Int = (r.top + r.bottom) / 2
-        val inSendZone: Boolean = cx > dw * 0.55 && cy > dh * 0.70
-
-        if (inSendZone && node.isEnabled && node.isClickable &&
-            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))
-        ) {
-            return node
-        }
-
-        for (i in 0 until node.childCount) {
-            val child: AccessibilityNodeInfo? = node.getChild(i)
-            if (child != null) {
-                val found: AccessibilityNodeInfo? = findSendButton(child, depth + 1)
-                if (found != null) return found
-            }
-        }
-        if (inSendZone && node.isEnabled && node.isClickable && node.childCount == 0) {
-            return node
-        }
-        return null
-    }
-
-    // ---------------- EVENTS ----------------
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        val pkg: String = event.packageName?.toString() ?: return
-
-        if (queueActive && pkg == Prefs.queuePkg(this) &&
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            qHandler.removeCallbacks(queueStep)
-            qHandler.postDelayed(queueStep, 800)
-            return
-        }
-
-        if (!Prefs.isPackageEnabled(this, pkg)) return
-
-        val pending: Triple<String, android.app.PendingIntent, String>? =
-            ReplyService.pendingChat
-        if (pending == null) return
-        ReplyService.pendingChat = null
-
-        val newMessage: String = pending.first
-        val sender: String = pending.third
-
-        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
-        val lines: List<String> = scrapeMessages(root).map { it.first }
-        root.recycle()
-
-        thread {
-            val reply: String? = try {
-                ReplyGenerator.generate(this, sender, lines, newMessage)
-            } catch (e: Exception) { null }
-            if (reply.isNullOrBlank()) return@thread
-            ChatHistory.add(this, sender, "them", newMessage)
-            ChatHistory.add(this, sender, "me", reply)
-            ChatHistory.addMessaged(this, sender)
-            handler.post { typeAndSend(reply) }
-        }
-    }
-
-    override fun onInterrupt() { }
-}
+            val child: AccessibilityNodeInfo? 
