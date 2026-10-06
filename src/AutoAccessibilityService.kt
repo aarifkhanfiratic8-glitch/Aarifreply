@@ -23,7 +23,7 @@ class AutoAccessibilityService : AccessibilityService() {
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-            canRetrieveWindowContent = true
+            setCanRetrieveWindowContent(true)
             notificationTimeout = 100
         })
     }
