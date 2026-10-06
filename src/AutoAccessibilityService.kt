@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -70,8 +71,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ---------------- START / STOP ----------------
-
     fun startQueue() {
         queueActive = true
         expectingChat = false
@@ -98,8 +97,6 @@ class AutoAccessibilityService : AccessibilityService() {
         dbg("Queue OFF")
     }
 
-    // ---------------- OVERLAY (sirf ON/OFF) ----------------
-
     private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
@@ -121,7 +118,7 @@ class AutoAccessibilityService : AccessibilityService() {
             val dt = TextView(this)
             dt.textSize = 10f
             dt.setTextColor(0xFF00FF00.toInt())
-            dt.text = "AutoReply: ready"
+            dt.text = "AutoReply: ready (drag me)"
             debugText = dt
             box.addView(dt)
 
@@ -130,6 +127,34 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             pauseBtn = pb
             box.addView(pb)
+
+            // drag support - text area pakad ke kahi bhi le jao
+            dt.setOnTouchListener(object : View.OnTouchListener {
+                private var downX: Float = 0f
+                private var downY: Float = 0f
+                override fun onTouch(v: View, event: MotionEvent): Boolean {
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            downX = event.rawX
+                            downY = event.rawY
+                            return true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx: Int = (event.rawX - downX).toInt()
+                            val dy: Int = (event.rawY - downY).toInt()
+                            downX = event.rawX
+                            downY = event.rawY
+                            val lp: WindowManager.LayoutParams =
+                                v.rootView.layoutParams as WindowManager.LayoutParams
+                            lp.x = lp.x - dx
+                            lp.y = lp.y + dy
+                            wm?.updateViewLayout(v.rootView, lp)
+                            return true
+                        }
+                    }
+                    return false
+                }
+            })
 
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -166,8 +191,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ---------------- MAIN QUEUE LOOP ----------------
-
     private val queueStep: Runnable = object : Runnable {
         override fun run() {
             if (!queueActive) return
@@ -201,7 +224,6 @@ class AutoAccessibilityService : AccessibilityService() {
 
             if (expectingChat) {
                 expectingChat = false
-                // CONFIRM: kya sach mein chat khula hai? (input box hona chahiye)
                 val field: AccessibilityNodeInfo? = findInput(root)
                 if (field == null) {
                     dbg("Chat not opened - going back, retry")
@@ -241,8 +263,6 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }, 40000)
     }
-
-    // ---------------- CHAT ANALYSIS ----------------
 
     private fun analyzeChat(root: AccessibilityNodeInfo) {
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
@@ -333,8 +353,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return false
     }
 
-    // ---------------- TYPE + SEND + NEXT ----------------
-
     private fun typeAndSend(reply: String) {
         handler.postDelayed({
             val root: AccessibilityNodeInfo? = rootInActiveWindow
@@ -413,8 +431,6 @@ class AutoAccessibilityService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
         qHandler.postDelayed(queueStep, 2800)
     }
-
-    // ---------------- LIST HELPERS ----------------
 
     private fun isSystemRow(name: String): Boolean {
         if (name.contains("TOKI TEAM", ignoreCase = true)) return true
@@ -547,4 +563,80 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isEditable) return node
         for (i in 0 until node.childCount) {
-            val child: AccessibilityNodeInfo? 
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findInput(child)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun findSendButton(node: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val desc: String = node.contentDescription?.toString()?.lowercase() ?: ""
+        val cls: String = node.className?.toString() ?: ""
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val dw: Int = resources.displayMetrics.widthPixels
+        val dh: Int = resources.displayMetrics.heightPixels
+        val cx: Int = (r.left + r.right) / 2
+        val cy: Int = (r.top + r.bottom) / 2
+        val inSendZone: Boolean = cx > dw * 0.55 && cy > dh * 0.70
+
+        if (inSendZone && node.isEnabled && node.isClickable &&
+            (desc.contains("send") || cls.endsWith("ImageButton") || cls.endsWith("Button"))
+        ) {
+            return node
+        }
+
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findSendButton(child, depth + 1)
+                if (found != null) return found
+            }
+        }
+        if (inSendZone && node.isEnabled && node.isClickable && node.childCount == 0) {
+            return node
+        }
+        return null
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg: String = event.packageName?.toString() ?: return
+
+        if (queueActive && pkg == Prefs.queuePkg(this) &&
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            qHandler.removeCallbacks(queueStep)
+            qHandler.postDelayed(queueStep, 800)
+            return
+        }
+
+        if (!Prefs.isPackageEnabled(this, pkg)) return
+
+        val pending: Triple<String, android.app.PendingIntent, String>? =
+            ReplyService.pendingChat
+        if (pending == null) return
+        ReplyService.pendingChat = null
+
+        val newMessage: String = pending.first
+        val sender: String = pending.third
+
+        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
+        val lines: List<String> = scrapeMessages(root).map { it.first }
+        root.recycle()
+
+        thread {
+            val reply: String? = try {
+                ReplyGenerator.generate(this, sender, lines, newMessage)
+            } catch (e: Exception) { null }
+            if (reply.isNullOrBlank()) return@thread
+            ChatHistory.add(this, sender, "them", newMessage)
+            ChatHistory.add(this, sender, "me", reply)
+            handler.post { typeAndSend(reply) }
+        }
+    }
+
+    override fun onInterrupt() { }
+}
