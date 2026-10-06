@@ -18,7 +18,7 @@ android {
     sourceSets {
         getByName("main") {
             manifest.srcFile("AndroidManifest.xml")
-            java.srcDir(".")
+            java.setSrcDirs(emptyList())
         }
     }
 
@@ -29,6 +29,16 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+kotlin {
+    sourceSets["main"].kotlin.srcDir(".")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    setSource(fileTree(rootDir) {
+        include("*.kt")
+    })
 }
 
 dependencies {
