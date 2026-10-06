@@ -18,14 +18,14 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
-        serviceInfo = AccessibilityServiceInfo().apply {
+        setServiceInfo(AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             canRetrieveWindowContent = true
             notificationTimeout = 100
-        }
+        })
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
