@@ -8,6 +8,18 @@ import kotlin.random.Random
 
 object ReplyGenerator {
 
+    // === EMOTIONAL QUESTION BANK - jab wo kuch nahi poochte ===
+    private val questionBank: List<String> = listOf(
+        "aapke haal chal kaisa hai yrr, batao na",
+        "kab milna hai aapko mujhse 😊",
+        "kya sochte ho mere baare mein, sach batao",
+        "kya mante ho mujhe apna batao na",
+        "aaj poora din kya kiya aapne",
+        "aapki life mein chal kya raha hai aajkal",
+        "mujhe miss karte ho kabhi 😊",
+        "aapke dil mein kya hai, mujhse share karo na"
+    )
+
     fun generate(
         context: Context,
         sender: String,
@@ -23,7 +35,7 @@ object ReplyGenerator {
                 // fail ho to templates
             }
         }
-        return localReply(newMessage)
+        return localReply(context, sender, newMessage)
     }
 
     private fun askOpenAI(
@@ -40,33 +52,33 @@ object ReplyGenerator {
 
         val convo = StringBuilder()
         screenLines.takeLast(14).forEach { convo.append(it).append("\n") }
-        if (history.isNotEmpty()) {
-            convo.append("Your previous replies in this chat: ")
-            convo.append(history.filter { it.first == "me" }.takeLast(5)
-                .joinToString(" | ") { it.second })
+        val myRecent = history.filter { it.first == "me" }.takeLast(6).map { it.second }
+        if (myRecent.isNotEmpty()) {
+            convo.append("Your recent replies: ")
+            convo.append(myRecent.joinToString(" | "))
         }
 
+        val lastQ: String = myRecent.lastOrNull { q -> questionBank.any { q.contains(it.take(12)) } } ?: ""
+
         val systemPrompt = "You are " + persona + " chatting with \"" + sender + "\" on a dating app. " +
-            "You reply AS the user like a real human. Never admit you are AI.\n\n" +
-            "LENGTH RULE (very important): every reply must be STRICTLY between 4 and 18 words. " +
-            "Never reply in 1-2 words. Never write more than 18 words.\n\n" +
-            "REPLY RULE (very important):\n" +
-            "- Agar unhone kuch POOCHA hai → uska warm, emotional jawab do.\n" +
-            "- Agar kuch nahi poocha (sirf 'hi', 'hello' ya koi statement) → " +
-            "tu EK CHHOTA SA QUESTION poochhe unse, jaise: " +
-            "'aap kaha se ho?', 'khana khaya kya?', 'aaj kya kiya?'.\n\n" +
-            "STYLE RULE: write like a real Indian girl from Delhi texting - Hinglish, emotional, warm. " +
-            "Use words like 'yrr', 'dilse', 'sach me'.\n\n" +
-            "STRICT SAFETY RULES:\n" +
-            "- NEVER share phone number, WhatsApp, Instagram, address, photos, social media.\n" +
-            "- If they ask for number/contact/photo: politely DEFLECT - " +
-            "'abhi nahi yrr, pehle thodi aur baat karo na 😊', 'itni jaldi kya hai 😄'.\n" +
-            "- Never be rude. Keep them interested."
+            "Reply AS the user like a real human. Never admit you are AI.\n\n" +
+            "STEP 1 - PADHO: dhyan se padho unka naya message: \"" + newMessage + "\"\n\n" +
+            "STEP 2 - RULE (sabse important):\n" +
+            "- Agar unhone kuch POOCHA hai → unka warm, emotional, direct JAWAB do (unke question ko ignore mat karo)\n" +
+            "- Agar unhone sirf 'ha', 'ji', 'ok', 'theek hai', ya koi STATEMENT bola (kuch nahi poocha) → " +
+            "tum EK emotional QUESTION poochho in jaise: " +
+            "'haal chal kaisa hai', 'kab milna hai', 'kya sochte ho mere baare mein', " +
+            "'kya mante ho mujhe apna', 'aaj kya kiya', 'dil mein kya hai'.\n" +
+            "- YE QUESTION MAT POOCHHO (already poocha tha): \"" + lastQ + "\"\n\n" +
+            "STEP 3 - STYLE: real Delhi girl texting - Hinglish, emotional, warm. " +
+            "Words: 'yrr', 'dilse', 'sach me'. STRICT 4 to 18 words. Never rude.\n\n" +
+            "SAFETY: NEVER share number/WhatsApp/Insta/photos/address. " +
+            "Agar maange to: 'abhi nahi yrr, pehle jaan lo mujhe 😊'."
 
         val userPrompt = "Chat with " + sender + " so far:\n" + convo.toString() +
             "\nNew message from " + sender + ": " + newMessage +
-            "\n\nWrite ONLY your next reply as the user. Between 4 and 18 words. " +
-            "If they asked something - answer it. If not - ask them a small question."
+            "\n\nWrite ONLY your next reply (4-18 words). " +
+            "Question poocha ho to jawab do | Nahi poocha ho to emotional question poochho."
 
         val conn = URL("https://api.openai.com/v1/chat/completions").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
@@ -95,9 +107,18 @@ object ReplyGenerator {
         return if (cleaned.isBlank()) throw RuntimeException("empty") else cleaned
     }
 
-    private fun localReply(message: String): String {
+    private fun localReply(context: Context, sender: String, message: String): String {
         val lower = message.lowercase().trim()
         fun pick(list: List<String>) = list[Random.nextInt(list.size)]
+
+        // pichla question yaad rakho - repeat nahi hoga
+        val history = ChatHistory.get(context, sender)
+        val myRecent = history.filter { it.first == "me" }.takeLast(6).map { it.second }
+        val lastQ: String = myRecent.lastOrNull { q -> questionBank.any { q.contains(it.take(12)) } } ?: ""
+        fun freshQuestion(): String {
+            val available = questionBank.filter { !lastQ.contains(it.take(12)) }
+            return pick(if (available.isEmpty()) questionBank else available)
+        }
 
         val personalAsk = listOf(
             "number", "numbr", "no do", "whatsapp", "wp do", "insta", "instagram",
@@ -107,7 +128,7 @@ object ReplyGenerator {
         if (personalAsk) {
             return pick(listOf(
                 "abhi nahi yrr 😅 pehle thodi aur baat karo na",
-                "itni jaldi kya hai yrr 😄 pehle jaan lo mujhe",
+                "itni jaldi kya hai yrr 😄 pehle dil se jaan lo mujhe",
                 "haan sab milega... dhire dhire 😊",
                 "abhi busy hoon yrr, shaam ko baat karte hain 😊"
             ))
@@ -116,66 +137,65 @@ object ReplyGenerator {
         val romantic = listOf("peyar", "pyaar", "pyar", "love", "dil", "miss", "marry", "shaadi", "jaan").any { it in lower }
         if (romantic) {
             return pick(listOf(
-                "sach me yrr? mujhe bhi aap ache lagte ho 😊",
-                "dilse batao yrr, kya sach me itna miss karte ho mujhe",
-                "aap bahut sweet ho yrr, sach me 😊"
+                "sach me yrr? mujhe bhi aap bahut ache lagte ho 😊",
+                "dilse batao yrr, " + freshQuestion(),
+                "aap bahut sweet ho yrr, sach me 😊 " + freshQuestion()
             ))
         }
 
         return when {
             listOf("kaha se", "kha se", "where", "city", "kidhar").any { it in lower } ->
                 pick(listOf(
-                    "main delhi se hu yrr, aap batao kaha se ho 😊",
-                    "delhi ki hoon main, aap kahan se ho?"
+                    "main delhi se hu yrr 😊 " + freshQuestion(),
+                    "delhi ki hoon main, " + freshQuestion()
                 ))
             listOf("khana", "kha liya", "lunch", "dinner", "breakfast", "khaye").any { it in lower } ->
                 pick(listOf(
-                    "haan khana kha liya yrr 😊 aapne khaya?",
-                    "abhi nahi khaya, bhookh lagi hai 😅 aap batao"
+                    "haan kha liya yrr 😊 " + freshQuestion(),
+                    "abhi nahi khaya 😅 " + freshQuestion()
                 ))
-            listOf("kaise ho", "kese ho", "how are you", "kya haal").any { it in lower } ->
+            listOf("kaise ho", "kese ho", "how are you", "kya haal", "haal chal", "haalchal").any { it in lower } ->
                 pick(listOf(
-                    "main theek hu yrr 😊 aap sunao kaise ho",
-                    "badhiya hoon 😊 aap batao aap kaise ho"
+                    "main theek hu yrr 😊 " + freshQuestion(),
+                    "badhiya hoon 😊 aap batao, " + freshQuestion()
                 ))
             listOf("kya kar", "kya kr", "what do you do", "job", "study", "kaam").any { it in lower } ->
                 pick(listOf(
-                    "main abhi study kar rahi hoon yrr 😊 aap batao",
-                    "ghar pe hoon aaj, free thi 😊 aap kya karte ho"
+                    "main abhi study kar rahi hoon yrr 😊 " + freshQuestion(),
+                    "ghar pe hoon aaj 😊 " + freshQuestion()
                 ))
-            listOf("gf", "boyfriend", "single", "married", "shaadi", "relation").any { it in lower } ->
+            listOf("gf", "boyfriend", "single", "married", "shaadi", "relation", "apna").any { it in lower } ->
                 pick(listOf(
-                    "nahi yrr abhi single hoon 😊 aap batao aapka kya scene hai",
-                    "abhi koi nahi hai yrr, aap batao aap single ho?"
+                    "aapko apna maanti hoon yrr 😊 " + freshQuestion(),
+                    "dil se poocho to aap apne ho 😊 " + freshQuestion()
                 ))
-            // greeting - video jaisa style
             listOf("hi", "hello", "hey", "hii", "heyy", "hola").any { lower.startsWith(it) } ->
                 pick(listOf(
-                    "hii kese ho aap 😊",
-                    "hello ji, kya kar rahe ho",
-                    "hi yrr, aap kaha se ho?",
-                    "heyy! kaisa chal raha hai aaj"
+                    "hii kese ho aap 😊 " + freshQuestion(),
+                    "hello ji 😊 " + freshQuestion(),
+                    "heyy! " + freshQuestion()
                 ))
             listOf("thank", "shukriya", "dhanyavad").any { it in lower } ->
-                pick(listOf("arre koi baat nahi yrr 😊", "itna formal mat bano yrr 😊"))
-            listOf("bye", "gtg", "chalta", "chalti").any { it in lower } ->
+                pick(listOf("arre koi baat nahi yrr 😊 " + freshQuestion(), "itna formal mat bano yrr 😊"))
+            listOf("bye", "gtg", "chalta", "chalti", "so jao", "sote").any { it in lower } ->
                 pick(listOf(
-                    "theek hai yrr, baad mein baat karte hain 👋",
-                    "ok yrr take care 😊 kal baat karna"
+                    "theek hai yrr 👋 " + freshQuestion(),
+                    "ok yrr take care 😊 kal baat karna, " + freshQuestion()
+                ))
+            listOf("haan", "ha ", "ji", "ok", "okay", "theek", "acha", "accha", "hm", "hmm").any { lower.startsWith(it) } ->
+                pick(listOf(
+                    freshQuestion() + " 😊",
+                    "ji 😊 " + freshQuestion(),
+                    "hmm bolo na yrr, " + freshQuestion()
                 ))
             listOf("lol", "haha", "😂", "🤣").any { it in lower } ->
-                pick(listOf(
-                    "haha 😂 aap bahut funny ho yrr",
-                    "😂😂 hasi rok nahi pa rahi yrr"
-                ))
-            // kuch nahi poocha → greeting question (video jaisa)
+                pick(listOf("haha 😂 " + freshQuestion(), "😂😂 " + freshQuestion()))
+            // kuch nahi poocha → emotional question (repeat nahi)
             else ->
                 pick(listOf(
-                    "hii kese ho aap 😊",
-                    "hello ji, kya chal raha hai",
-                    "hii, aap kaha se ho?",
-                    "hello, khana khaya kya aapne",
-                    "hii ji, aaj kya kiya aapne"
+                    freshQuestion() + " 😊",
+                    "ji bolo na yrr 😊 " + freshQuestion(),
+                    "sach me? " + freshQuestion()
                 ))
         }
     }
