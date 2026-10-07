@@ -49,7 +49,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
-        private val casuals: List<String> = listOf(
+    private val casuals: List<String> = listOf(
         "hii kese ho aap 😊",
         "hello ji, kya chal raha hai",
         "hii, aap kaha se ho?",
@@ -141,7 +141,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+        private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
         b.textSize = 11f
@@ -478,6 +478,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
+    
         // === Conversation rule: unka msg = HAMESHA jawab | hamara/empty = ek greeting phir aage ===
     private fun handleChat(root: AccessibilityNodeInfo) {
         val key: String = lastSender
@@ -517,7 +518,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
-        val recent: List<Pair<String, Boolean>> = msgs.takeLast(6)
+        val recent: List<Pair<String, Boolean>> = msgs.takeLast(8)
         val contextLines: List<String> = recent.map {
             if (it.second) "You: " + it.first else "Them: " + it.first
         }
@@ -546,6 +547,16 @@ class AutoAccessibilityService : AccessibilityService() {
         return out.takeLast(12)
     }
 
+    // === FIX: text nodes jinke andar SPANS hain unhe bhi pakdo - messages miss nahi honge ===
+    private fun hasTextChild(node: AccessibilityNodeInfo): Boolean {
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            val ct: String? = c?.text?.toString()
+            if (ct != null && ct.isNotEmpty()) return true
+        }
+        return false
+    }
+
     private fun collectMessages(
         node: AccessibilityNodeInfo,
         out: ArrayList<Pair<String, Boolean>>,
@@ -556,7 +567,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (depth > 16) return
         if (!node.isEditable) {
             val t: String? = node.text?.toString()?.trim()
-            if (t != null && t.isNotEmpty() && node.childCount == 0) {
+            if (t != null && t.isNotEmpty() && !hasTextChild(node)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
                 val cy: Int = (r.top + r.bottom) / 2
@@ -597,6 +608,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (low == "online" || low.startsWith("online |")) return true
         if (low.endsWith("km") && t.length <= 20) return true
         if (low == "vip" || low.endsWith(" vip")) return true
+        if (low.matches(Regex("^x\\d+$"))) return true
         return false
     }
 
@@ -783,7 +795,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 900)
     }
 
-    // Next unread: clickable parent par CLICK, na chale to center par tap - galat jagah kabhi nahi
+    // Next unread: clickable parent par CLICK, na chale to center par tap
     private fun goNextOrBack() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         if (root != null) {
@@ -893,3 +905,5 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
+
+    
