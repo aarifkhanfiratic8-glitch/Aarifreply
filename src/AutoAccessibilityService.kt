@@ -200,7 +200,7 @@ class AutoAccessibilityService : AccessibilityService() {
             pauseBtn?.setBackgroundColor(0xFFC62828.toInt())
         }
     }
-    private fun isInChat(root: AccessibilityNodeInfo): Boolean {
+        private fun isInChat(root: AccessibilityNodeInfo): Boolean {
         val field: AccessibilityNodeInfo = findInput(root) ?: return false
         val r = Rect()
         field.getBoundsInScreen(r)
@@ -278,6 +278,15 @@ class AutoAccessibilityService : AccessibilityService() {
             }
 
             if (!isOnList(root)) {
+                val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
+                if (chatBtn != null) {
+                    dbg("Profile - opening chat")
+                    chatBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    expectingChat = true
+                    qHandler.removeCallbacksAndMessages(null)
+                    qHandler.postDelayed(this, 8000)
+                    return
+                }
                 dbg("Other screen - back to list")
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 expectingChat = false
@@ -322,19 +331,14 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun analyzeChat(root: AccessibilityNodeInfo) {
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
-        if (msgs.isEmpty()) {
-            dbg("No messages - casual msg")
+        val last: Pair<String, Boolean>? = msgs.lastOrNull()
+        if (last != null && !last.second) {
+            dbg("Their msg - AI reply")
+            handleTheirMessage(msgs, lastSender)
+        } else {
+            dbg("Our last/none - casual msg")
             sendCasualText()
-            return
         }
-        val last: Pair<String, Boolean> = msgs[msgs.size - 1]
-        if (last.second) {
-            dbg("Our last - skip, back")
-            goNextOrBack()
-            return
-        }
-        dbg("Their msg - AI reply")
-        handleTheirMessage(msgs, lastSender)
     }
 
     private fun sendCasualText() {
