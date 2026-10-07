@@ -99,7 +99,6 @@ object ReplyGenerator {
         val lower = message.lowercase().trim()
         fun pick(list: List<String>) = list[Random.nextInt(list.size)]
 
-        // PERSONAL INFO maangi hai — kabhi share nahi, hamesha taalo
         val personalAsk = listOf(
             "number", "numbr", "no do", "whatsapp", "wp do", "insta", "instagram",
             "photo", "pic", "selfi", "address", "ghar kaha", "milna hai", "real me mil",
@@ -114,7 +113,6 @@ object ReplyGenerator {
             ))
         }
 
-        // romantic/emotional message — emotional jawab
         val romantic = listOf("peyar", "pyaar", "pyar", "love", "dil", "miss", "marry", "shaadi", "jaan").any { it in lower }
         if (romantic) {
             return pick(listOf(
@@ -124,7 +122,6 @@ object ReplyGenerator {
             ))
         }
 
-        // Question poocha hai — jawab do (Delhi girl persona)
         return when {
             listOf("kaha se", "kha se", "where", "city", "kidhar").any { it in lower } ->
                 pick(listOf(
@@ -141,36 +138,44 @@ object ReplyGenerator {
                     "main theek hu yrr 😊 aap sunao kaise ho",
                     "badhiya hoon 😊 aap batao aap kaise ho"
                 ))
+            listOf("kya kar", "kya kr", "what do you do", "job", "study", "kaam").any { it in lower } ->
+                pick(listOf(
+                    "main abhi study kar rahi hoon yrr 😊 aap batao",
+                    "ghar pe hoon aaj, free thi 😊 aap kya karte ho"
+                ))
             listOf("gf", "boyfriend", "single", "married", "shaadi", "relation").any { it in lower } ->
                 pick(listOf(
                     "nahi yrr abhi single hoon 😊 aap batao aapka kya scene hai",
                     "abhi koi nahi hai yrr, aap batao aap single ho?"
                 ))
+            // greeting - video jaisa style
             listOf("hi", "hello", "hey", "hii", "heyy", "hola").any { lower.startsWith(it) } ->
                 pick(listOf(
-                    "heyy! kaha se ho aap? 😊",
-                    "hi yrr 😊 khana khaya kya aapne?",
-                    "hello! aaj kya kiya aapne, batao na"
+                    "hii kese ho aap 😊",
+                    "hello ji, kya kar rahe ho",
+                    "hi yrr, aap kaha se ho?",
+                    "heyy! kaisa chal raha hai aaj"
                 ))
             listOf("thank", "shukriya", "dhanyavad").any { it in lower } ->
                 pick(listOf("arre koi baat nahi yrr 😊", "itna formal mat bano yrr 😊"))
-            listOf("bye", "gtg", "chalta").any { it in lower } ->
+            listOf("bye", "gtg", "chalta", "chalti").any { it in lower } ->
                 pick(listOf(
-                    "theek hai yrr, baad mein baat karte hain 👋 aap kaha se ho waise?",
+                    "theek hai yrr, baad mein baat karte hain 👋",
                     "ok yrr take care 😊 kal baat karna"
                 ))
             listOf("lol", "haha", "😂", "🤣").any { it in lower } ->
                 pick(listOf(
-                    "haha 😂 aap bahut funny ho yrr, aap kaha se ho?",
+                    "haha 😂 aap bahut funny ho yrr",
                     "😂😂 hasi rok nahi pa rahi yrr"
                 ))
-            // Kuch nahi poocha → QUESTION poochho (user ka rule)
+            // kuch nahi poocha → greeting question (video jaisa)
             else ->
                 pick(listOf(
-                    "acha yrr 😊 aap kaha se ho?",
-                    "hmm theek hai 😊 aapne khana khaya kya?",
-                    "sahi hai yrr 😊 aaj kya kiya aapne?",
-                    "ok yrr 😊 aapka din kaisa gaya aaj?"
+                    "hii kese ho aap 😊",
+                    "hello ji, kya chal raha hai",
+                    "hii, aap kaha se ho?",
+                    "hello, khana khaya kya aapne",
+                    "hii ji, aaj kya kiya aapne"
                 ))
         }
     }
