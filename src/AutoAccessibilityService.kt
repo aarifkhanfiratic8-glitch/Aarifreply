@@ -49,12 +49,27 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
-    private val casuals: List<String> = listOf(
+        private val casuals: List<String> = listOf(
         "hii kese ho aap 😊",
-        "hello ji, kya kar rahe ho",
+        "hello ji, kya chal raha hai",
         "hii, aap kaha se ho?",
         "hello, khana khaya kya aapne",
-        "hii ji, kaisa chal raha hai aaj"
+        "hii ji, kaisa chal raha hai aaj",
+        "hii yrr, aaj kya kiya aapne",
+        "hello ji, aapka din kaisa gaya",
+        "hii, kya kar rahe ho aajkal",
+        "hello, mujhe yaad aayi aapki 😊",
+        "hii ji, batao na kuch apne baare me",
+        "hello yrr, kab free hote ho aap",
+        "hii, aaj kuch khaas hua kya",
+        "hello ji, aap bahut ache lagte ho 😊",
+        "hii yrr, aaj bore ho rahi thi",
+        "hello, milne ka mann kar raha hai 😊",
+        "hii ji, kya sochte ho mere baare me",
+        "hello yrr, baat achi lagti hai aapse",
+        "hii, aapka kya haal hai",
+        "hello ji, itne din baad baat hui 😊",
+        "hii yrr, bolo na kuch"
     )
 
     override fun onServiceConnected() {
