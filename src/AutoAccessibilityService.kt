@@ -336,7 +336,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === PART 3 ISKE NICHE AAYEGA ===
-        private fun armWatchdog() {
+          private fun armWatchdog() {
         qHandler.removeCallbacksAndMessages(null)
         qHandler.postDelayed({
             if (queueActive) {
@@ -361,8 +361,13 @@ class AutoAccessibilityService : AccessibilityService() {
         val key: String = lastSender
         if (analyzing) return
         if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
-            dbg("Already analyzed - skip")
-            qHandler.postDelayed(queueStep, 4000)
+            // FIX: pehle sirf wait karta tha, ab chat se BAHAR nikal jao
+            dbg("Already analyzed - back to list")
+            analyzedKey = ""
+            sending = false
+            analyzing = false
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            qHandler.postDelayed(queueStep, 3500)
             return
         }
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
@@ -462,8 +467,6 @@ class AutoAccessibilityService : AccessibilityService() {
         if (low.endsWith("km") && t.length <= 8) return true
         return false
     }
-
-    // === PART 4 ISKE NICHE AAYEGA ===
         private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
@@ -532,27 +535,62 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 1200)
     }
 
+    // === FIX: send click verify + gesture tap fallback + atakne se recovery ===
     private fun trySendClick(attempt: Int) {
-        if (attempt > 10) {
-            dbg("Send button NOT found - NO back, waiting")
+        if (attempt > 14) {
+            dbg("Send FAILED - back to list")
             sending = false
-            qHandler.postDelayed(queueStep, 5000)
+            backToListIfInChat()
             return
         }
-        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
+        val root: AccessibilityNodeInfo? = rootInActiveWindow
+        if (root == null) {
+            // FIX: pehle yahan chain dead ho jaati thi - ab retry
+            handler.postDelayed({ trySendClick(attempt + 1) }, 700)
+            return
+        }
         val send: AccessibilityNodeInfo? = findSendButton(root, 0)
         if (send == null) {
             handler.postDelayed({ trySendClick(attempt + 1) }, 700)
             return
         }
         dbg("Clicking SEND")
+        val r = Rect()
+        send.getBoundsInScreen(r)
+        val sx: Float = ((r.left + r.right) / 2).toFloat()
+        val sy: Float = ((r.top + r.bottom) / 2).toFloat()
         val ok: Boolean = send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (ok) {
-            dbg("SENT!")
-            handler.postDelayed({ goNextOrBack() }, 4000)
-            return
-        }
-        handler.postDelayed({ trySendClick(attempt + 1) }, 700)
+        // FIX: 2.5s baad verify karo - sach mein bheja ya nahi
+        handler.postDelayed({
+            val root2: AccessibilityNodeInfo? = rootInActiveWindow
+            val field2: AccessibilityNodeInfo? =
+                if (root2 == null) null else findInput(root2)
+            val txt: String = field2?.text?.toString() ?: ""
+            if (txt.isBlank()) {
+                dbg("SENT!")
+                handler.postDelayed({ goNextOrBack() }, 4000)
+                return@postDelayed
+            }
+            if (ok) {
+                // click accept hua par message pada hai - gesture tap fallback
+                dbg("Click no effect - tap fallback")
+                tap(sx, sy)
+                handler.postDelayed({
+                    val root3: AccessibilityNodeInfo? = rootInActiveWindow
+                    val field3: AccessibilityNodeInfo? =
+                        if (root3 == null) null else findInput(root3)
+                    val t3: String = field3?.text?.toString() ?: ""
+                    if (t3.isBlank()) {
+                        dbg("SENT by tap!")
+                        handler.postDelayed({ goNextOrBack() }, 4000)
+                    } else {
+                        handler.postDelayed({ trySendClick(attempt + 1) }, 800)
+                    }
+                }, 2500)
+            } else {
+                handler.postDelayed({ trySendClick(attempt + 1) }, 700)
+            }
+        }, 2500)
     }
 
     private fun goNextOrBack() {
