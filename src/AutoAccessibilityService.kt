@@ -123,7 +123,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+        private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
         b.textSize = 11f
@@ -294,7 +294,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // FIX: profile page khuli ho to auto BACK
             if (findNodeWithText(root, "private album", 0) != null ||
                 findNodeWithText(root, "add voice intro", 0) != null ||
                 findNodeWithText(root, "profile tags", 0) != null
@@ -480,7 +479,8 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        private fun typeAndSend(reply: String) {
+        // === FINAL: pehle CLEAR (no concat), phir paste, phir computed-tap SEND ===
+    private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
             return
@@ -494,66 +494,81 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             val field: AccessibilityNodeInfo? = findInput(root)
             if (field == null) {
-                dbg("No input field - NO back")
+                dbg("No input field - waiting")
                 sending = false
                 return@postDelayed
             }
-            val existing: String = field.text?.toString() ?: ""
-            if (existing.trim() == reply.trim()) {
-                dbg("Already pasted - direct SEND")
-                handler.postDelayed({ trySendClick(0) }, 1000)
-                return@postDelayed
+            // STEP 0: purana text CLEAR karo (concatenation fix)
+            val old: String = field.text?.toString() ?: ""
+            if (old.isNotBlank()) {
+                dbg("Clearing old text...")
+                val clearArgs = Bundle()
+                clearArgs.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, ""
+                )
+                field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
             }
-            dbg("Pasting...")
-            val clipboard: android.content.ClipboardManager =
-                getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            clipboard.setPrimaryClip(
-                android.content.ClipData.newPlainText("reply", reply)
-            )
-            field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            // STEP 1: paste karo
             handler.postDelayed({
-                val root2: AccessibilityNodeInfo? = rootInActiveWindow
-                val field2: AccessibilityNodeInfo? =
-                    if (root2 == null) null else findInput(root2)
-                val txt: String = field2?.text?.toString() ?: ""
-                if (txt.isNotBlank()) {
-                    dbg("Paste confirmed")
-                    handler.postDelayed({ trySendClick(0) }, 1200)
-                } else {
-                    dbg("Retry with SET_TEXT")
-                    val args = Bundle()
-                    args.putCharSequence(
-                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        reply
-                    )
-                    if (field2 != null) {
-                        field2.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                    }
-                    handler.postDelayed({
-                        val root3: AccessibilityNodeInfo? = rootInActiveWindow
-                        val field3: AccessibilityNodeInfo? =
-                            if (root3 == null) null else findInput(root3)
-                        val t3: String = field3?.text?.toString() ?: ""
-                        if (t3.isNotBlank()) {
-                            dbg("Text confirmed")
-                            handler.postDelayed({ trySendClick(0) }, 1200)
-                        } else {
-                            dbg("No text - NO back, waiting")
-                            sending = false
-                        }
-                    }, 1200)
+                val root1: AccessibilityNodeInfo? = rootInActiveWindow
+                val field1: AccessibilityNodeInfo? =
+                    if (root1 == null) null else findInput(root1)
+                if (field1 == null) {
+                    sending = false
+                    return@postDelayed
                 }
-            }, 1200)
+                dbg("Pasting...")
+                val clipboard: android.content.ClipboardManager =
+                    getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(
+                    android.content.ClipData.newPlainText("reply", reply)
+                )
+                field1.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                field1.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                // STEP 2: confirm karo text sahi aaya
+                handler.postDelayed({
+                    val root2: AccessibilityNodeInfo? = rootInActiveWindow
+                    val field2: AccessibilityNodeInfo? =
+                        if (root2 == null) null else findInput(root2)
+                    val txt: String = field2?.text?.toString() ?: ""
+                    if (txt.contains(reply)) {
+                        dbg("Paste confirmed")
+                        handler.postDelayed({ trySendClick(0) }, 1200)
+                    } else {
+                        dbg("Retry SET_TEXT")
+                        val args = Bundle()
+                        args.putCharSequence(
+                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                            reply
+                        )
+                        if (field2 != null) {
+                            field2.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                        }
+                        handler.postDelayed({
+                            val root3: AccessibilityNodeInfo? = rootInActiveWindow
+                            val field3: AccessibilityNodeInfo? =
+                                if (root3 == null) null else findInput(root3)
+                            val t3: String = field3?.text?.toString() ?: ""
+                            if (t3.contains(reply)) {
+                                dbg("Text confirmed")
+                                handler.postDelayed({ trySendClick(0) }, 1200)
+                            } else {
+                                dbg("No text - waiting")
+                                sending = false
+                            }
+                        }, 1200)
+                    }
+                }, 1200)
+            }, if (old.isNotBlank()) 900 else 100)
         }, 1200)
     }
 
-    // === FIX: send button = input row ka sabse-right button, exact target ===
+    // === FINAL: send = input pill ke RIGHT CORNER par direct screen tap ===
     private fun trySendClick(attempt: Int) {
-        if (attempt > 14) {
-            dbg("Send FAILED - back to list")
-            sending = false
-            backToListIfInChat()
+        if (attempt > 12) {
+            dbg("Send FAILED - clear + back to list")
+            clearFieldAndBack()
             return
         }
         val root: AccessibilityNodeInfo? = rootInActiveWindow
@@ -561,18 +576,22 @@ class AutoAccessibilityService : AccessibilityService() {
             handler.postDelayed({ trySendClick(attempt + 1) }, 700)
             return
         }
-        val send: AccessibilityNodeInfo? = findSendButton(root)
-        if (send == null) {
+        val field: AccessibilityNodeInfo? = findInput(root)
+        if (field == null) {
             handler.postDelayed({ trySendClick(attempt + 1) }, 700)
             return
         }
-        val r = Rect()
-        send.getBoundsInScreen(r)
-        val sx: Float = ((r.left + r.right) / 2).toFloat()
-        val sy: Float = ((r.top + r.bottom) / 2).toFloat()
-        dbg("Clicking SEND at " + sx.toInt() + "," + sy.toInt())
-        send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        // FIX: 2.5s baad verify - data na mile to SENT nahi, retry
+        val fr = Rect()
+        field.getBoundsInScreen(fr)
+        if (fr.isEmpty) {
+            handler.postDelayed({ trySendClick(attempt + 1) }, 700)
+            return
+        }
+        // send button hamesha input pill ke andar, right end par hota hai
+        val sx: Float = fr.right - fr.height() * 0.55f
+        val sy: Float = ((fr.top + fr.bottom) / 2).toFloat()
+        dbg("Tap SEND " + attempt + " at " + sx.toInt() + "," + sy.toInt())
+        tap(sx, sy)
         handler.postDelayed({
             val root2: AccessibilityNodeInfo? = rootInActiveWindow
             if (root2 == null) {
@@ -588,72 +607,26 @@ class AutoAccessibilityService : AccessibilityService() {
             if (txt.isBlank()) {
                 dbg("SENT!")
                 handler.postDelayed({ goNextOrBack() }, 4000)
-                return@postDelayed
+            } else {
+                handler.postDelayed({ trySendClick(attempt + 1) }, 800)
             }
-            // click kaam nahi kiya - tap fallback exact coordinate par
-            dbg("Click no effect - tap fallback")
-            tap(sx, sy)
-            handler.postDelayed({
-                val root3: AccessibilityNodeInfo? = rootInActiveWindow
-                if (root3 == null) {
-                    handler.postDelayed({ trySendClick(attempt + 1) }, 800)
-                    return@postDelayed
-                }
-                val field3: AccessibilityNodeInfo? = findInput(root3)
-                if (field3 == null) {
-                    handler.postDelayed({ trySendClick(attempt + 1) }, 800)
-                    return@postDelayed
-                }
-                val t3: String = field3.text?.toString() ?: ""
-                if (t3.isBlank()) {
-                    dbg("SENT by tap!")
-                    handler.postDelayed({ goNextOrBack() }, 4000)
-                } else {
-                    handler.postDelayed({ trySendClick(attempt + 1) }, 800)
-                }
-            }, 2500)
-        }, 2500)
+        }, 2200)
     }
 
-    // === FIX: input field ke same-row, sabse-right clickable button ===
-    private fun findSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val field: AccessibilityNodeInfo = findInput(root) ?: return null
-        val fr = Rect()
-        field.getBoundsInScreen(fr)
-        val candidates = ArrayList<Pair<AccessibilityNodeInfo, Int>>()
-        collectSendCandidates(root, fr, candidates, 0)
-        if (candidates.isEmpty()) return null
-        candidates.sortByDescending { it.second }
-        return candidates[0].first
-    }
-
-    private fun collectSendCandidates(
-        node: AccessibilityNodeInfo,
-        fieldRect: Rect,
-        out: ArrayList<Pair<AccessibilityNodeInfo, Int>>,
-        depth: Int
-    ) {
-        if (depth > 14) return
-        if (node.isClickable && node.isEnabled) {
-            val r = Rect()
-            node.getBoundsInScreen(r)
-            if (!r.isEmpty) {
-                val cx: Int = (r.left + r.right) / 2
-                val cy: Int = (r.top + r.bottom) / 2
-                val inRow: Boolean =
-                    cy >= fieldRect.top - 40 && cy <= fieldRect.bottom + 40
-                val rightSide: Boolean =
-                    cx > fieldRect.left + (fieldRect.width() * 0.55)
-                val smaller: Boolean = r.width() <= fieldRect.width() / 2
-                if (inRow && rightSide && smaller) {
-                    out.add(Pair(node, cx))
-                }
+    private fun clearFieldAndBack() {
+        try {
+            val root: AccessibilityNodeInfo? = rootInActiveWindow
+            val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
+            if (field != null) {
+                val args = Bundle()
+                args.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, ""
+                )
+                field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             }
-        }
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) collectSendCandidates(c, fieldRect, out, depth + 1)
-        }
+        } catch (e: Exception) { }
+        sending = false
+        backToListIfInChat()
     }
 
     private fun goNextOrBack() {
