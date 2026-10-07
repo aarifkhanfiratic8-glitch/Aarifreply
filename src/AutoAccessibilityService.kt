@@ -126,7 +126,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-        private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
         b.textSize = 11f
@@ -463,7 +463,6 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
-    
         // === Conversation rule: unka msg = HAMESHA jawab | hamara/empty = ek greeting phir aage ===
     private fun handleChat(root: AccessibilityNodeInfo) {
         val key: String = lastSender
@@ -654,7 +653,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
-    // Send: pehle button NODE par direct CLICK (performAction) - row-click jaisa
+    // Send: pehle button NODE par direct CLICK, phir alternate tap
     private fun sendFlow(attempt: Int) {
         if (attempt > 10) {
             dbg("Send not working - recovery back")
@@ -701,14 +700,14 @@ class AutoAccessibilityService : AccessibilityService() {
                 handler.postDelayed({ sendFlow(attempt + 1) }, 700)
                 return@postDelayed
             }
-            val txt: String = field2.text?.toString() ?: ""
-            if (txt.isBlank()) {
+            val txt: String = (field2.text?.toString() ?: "").trim()
+            if (txt.isEmpty() || txt.equals("say something", ignoreCase = true)) {
                 dbg("SENT!")
                 onSent()
             } else {
                 sendFlow(attempt + 1)
             }
-        }, 1300)
+        }, 900)
     }
 
     private fun findSendNodeInRow(
@@ -766,15 +765,34 @@ class AutoAccessibilityService : AccessibilityService() {
         sending = false
         handler.postDelayed({
             goNextOrBack()
-        }, 2000)
+        }, 900)
     }
 
+    // Next unread: clickable parent par CLICK, na chale to center par tap - galat jagah kabhi nahi
     private fun goNextOrBack() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         if (root != null) {
             val node: AccessibilityNodeInfo? = findNodeWithText(root, "next unread", 0)
             if (node != null) {
-                val ok: Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                var target: AccessibilityNodeInfo? = node
+                var steps = 0
+                while (target != null && !target.isClickable && steps < 6) {
+                    target = target.parent
+                    steps++
+                }
+                var ok = false
+                if (target != null && target.isClickable) {
+                    ok = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+                if (!ok) {
+                    val r = Rect()
+                    node.getBoundsInScreen(r)
+                    if (!r.isEmpty) {
+                        dbg("Next unread - tap fallback")
+                        tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
+                        ok = true
+                    }
+                }
                 if (ok) {
                     dbg("Next unread clicked")
                     expectingChat = true
@@ -860,5 +878,3 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
-
-    
