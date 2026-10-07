@@ -34,6 +34,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var expectingChat: Boolean = false
+    private var expectingRetries: Int = 0
     private var lastSender: String = ""
     private var wm: WindowManager? = null
     private var overlayView: View? = null
@@ -49,11 +50,11 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
 
     private val casuals: List<String> = listOf(
-        "aap kaha se ho batao na",
-        "khana khaya kya aapne",
-        "aaj kya kiya aapne, batao na",
-        "kya kar rahe ho aajkal",
-        "aapke yahan mausam kaisa hai"
+        "hii kese ho aap 😊",
+        "hello ji, kya kar rahe ho",
+        "hii, aap kaha se ho?",
+        "hello, khana khaya kya aapne",
+        "hii ji, kaisa chal raha hai aaj"
     )
 
     override fun onServiceConnected() {
@@ -93,6 +94,7 @@ class AutoAccessibilityService : AccessibilityService() {
     fun startQueue() {
         queueActive = true
         expectingChat = false
+        expectingRetries = 0
         wrongPkgCount = 0
         sending = false
         analyzing = false
@@ -269,13 +271,23 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
+            // FIX: chat load hone tak 5 baar wait karo, jaldi give up nahi
             if (expectingChat) {
-                expectingChat = false
                 if (!isInChat(root)) {
-                    dbg("Chat not opened - rescanning")
-                    qHandler.postDelayed(this, 4000)
+                    expectingRetries++
+                    if (expectingRetries < 5) {
+                        dbg("Chat loading... wait (" + expectingRetries + ")")
+                        qHandler.postDelayed(this, 3000)
+                        return
+                    }
+                    expectingChat = false
+                    expectingRetries = 0
+                    dbg("Chat not opened - rescan")
+                    qHandler.postDelayed(this, 3000)
                     return
                 }
+                expectingChat = false
+                expectingRetries = 0
                 dbg("Chat opened: " + lastSender)
                 armWatchdog()
                 analyzeChat(root)
@@ -294,27 +306,28 @@ class AutoAccessibilityService : AccessibilityService() {
                 return
             }
 
-            if (findNodeWithText(root, "private album", 0) != null ||
-                findNodeWithText(root, "add voice intro", 0) != null ||
-                findNodeWithText(root, "profile tags", 0) != null
-            ) {
+            // "Chat" button sirf PROFILE page par click hoga (chat screen ke "In voice chat" se nahi)
+            val isProfile: Boolean = findNodeWithText(root, "private album", 0) != null ||
+                    findNodeWithText(root, "add voice intro", 0) != null ||
+                    findNodeWithText(root, "profile tags", 0) != null
+            if (isProfile) {
+                val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
+                if (chatBtn != null) {
+                    dbg("Profile - opening chat")
+                    chatBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    expectingChat = true
+                    expectingRetries = 0
+                    qHandler.removeCallbacksAndMessages(null)
+                    qHandler.postDelayed(this, 9000)
+                    return
+                }
                 dbg("Profile page - back to list")
-                expectingChat = false
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 qHandler.postDelayed(this, 3000)
                 return
             }
 
             if (!isOnList(root)) {
-                val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
-                if (chatBtn != null) {
-                    dbg("Profile - opening chat")
-                    chatBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    expectingChat = true
-                    qHandler.removeCallbacksAndMessages(null)
-                    qHandler.postDelayed(this, 9000)
-                    return
-                }
                 dbg("Other screen - back to list")
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 expectingChat = false
@@ -338,6 +351,7 @@ class AutoAccessibilityService : AccessibilityService() {
             sending = false
             analyzing = false
             analyzedKey = ""
+            expectingRetries = 0
             dbg("Open: " + pick.second)
             clickRowTextArea(pick.first, pick.second)
             expectingChat = true
@@ -394,7 +408,7 @@ class AutoAccessibilityService : AccessibilityService() {
             dbg("Their msg - AI reply")
             handleTheirMessage(msgs, lastSender)
         } else {
-            dbg("Our last/none - question poocho")
+            dbg("Our last/none - greeting bhejo")
             sendCasualText()
         }
     }
@@ -418,7 +432,7 @@ class AutoAccessibilityService : AccessibilityService() {
             } catch (e: Exception) { null }
             analyzing = false
             if (reply.isNullOrBlank()) {
-                dbg("AI failed - casual fallback")
+                dbg("AI failed - greeting fallback")
                 handler.post { sendCasualText() }
                 return@thread
             }
@@ -462,24 +476,35 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
+    // FIX: saara junk filter - sirf asli messages bachenge
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
         if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
         if (t.matches(Regex("^\\d{4}/.*"))) return true
         val low: String = t.lowercase()
+        if (low == "say something") return true
+        if (t.endsWith("…") || t.endsWith("...")) return true
+        if (low.contains("great fit")) return true
+        if (low.contains("say hi now")) return true
+        if (low.contains("no need to pay")) return true
+        if (low.contains("the partner is online")) return true
+        if (low.contains("go have a chat")) return true
         if (low.contains("congrats")) return true
         if (low.contains("streak")) return true
         if (low.contains("intimacy")) return true
         if (low.contains("restore")) return true
         if (low.contains("next unread")) return true
-        if (low.contains("go have a chat")) return true
+        if (low.contains("birthday") && low.contains("blessing")) return true
+        if (low.contains("best wishes")) return true
         if (t == "View" || t == "New" || t == "Online") return true
-        if (low.endsWith("km") && t.length <= 8) return true
+        if (low == "online" || low.startsWith("online |")) return true
+        if (low.endsWith("km") && t.length <= 20) return true
+        if (low == "vip" || low.endsWith(" vip")) return true
         return false
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        // === FINAL: pehle CLEAR (no concat), phir paste, phir computed-tap SEND ===
+        // Paste: pehle CLEAR (no concat), phir paste, phir confirm
     private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
@@ -498,9 +523,8 @@ class AutoAccessibilityService : AccessibilityService() {
                 sending = false
                 return@postDelayed
             }
-            // STEP 0: purana text CLEAR karo (concatenation fix)
             val old: String = field.text?.toString() ?: ""
-            if (old.isNotBlank()) {
+            if (old.isNotBlank() && old.trim() != reply.trim()) {
                 dbg("Clearing old text...")
                 val clearArgs = Bundle()
                 clearArgs.putCharSequence(
@@ -509,13 +533,18 @@ class AutoAccessibilityService : AccessibilityService() {
                 field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
             }
-            // STEP 1: paste karo
             handler.postDelayed({
                 val root1: AccessibilityNodeInfo? = rootInActiveWindow
                 val field1: AccessibilityNodeInfo? =
                     if (root1 == null) null else findInput(root1)
                 if (field1 == null) {
                     sending = false
+                    return@postDelayed
+                }
+                val cur: String = field1.text?.toString() ?: ""
+                if (cur.trim() == reply.trim()) {
+                    dbg("Already there - direct SEND")
+                    handler.postDelayed({ trySendClick(0) }, 800)
                     return@postDelayed
                 }
                 dbg("Pasting...")
@@ -526,7 +555,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 )
                 field1.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 field1.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-                // STEP 2: confirm karo text sahi aaya
                 handler.postDelayed({
                     val root2: AccessibilityNodeInfo? = rootInActiveWindow
                     val field2: AccessibilityNodeInfo? =
@@ -560,11 +588,11 @@ class AutoAccessibilityService : AccessibilityService() {
                         }, 1200)
                     }
                 }, 1200)
-            }, if (old.isNotBlank()) 900 else 100)
+            }, if (old.isNotBlank() && old.trim() != reply.trim()) 900 else 100)
         }, 1200)
     }
 
-    // === FINAL: send = input pill ke RIGHT CORNER par direct screen tap ===
+    // FIX: send = screen ke RIGHT END par tap (input ki same height) - video jaisa
     private fun trySendClick(attempt: Int) {
         if (attempt > 12) {
             dbg("Send FAILED - clear + back to list")
@@ -587,8 +615,9 @@ class AutoAccessibilityService : AccessibilityService() {
             handler.postDelayed({ trySendClick(attempt + 1) }, 700)
             return
         }
-        // send button hamesha input pill ke andar, right end par hota hai
-        val sx: Float = fr.right - fr.height() * 0.55f
+        val dw: Int = resources.displayMetrics.widthPixels
+        // send button hamesha input pill ke right end par: screen width ka ~88%
+        val sx: Float = dw * 0.88f
         val sy: Float = ((fr.top + fr.bottom) / 2).toFloat()
         dbg("Tap SEND " + attempt + " at " + sx.toInt() + "," + sy.toInt())
         tap(sx, sy)
@@ -645,6 +674,7 @@ class AutoAccessibilityService : AccessibilityService() {
             val ok: Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (ok) {
                 expectingChat = true
+                expectingRetries = 0
                 sending = false
                 analyzing = false
                 analyzedKey = ""
@@ -715,6 +745,7 @@ class AutoAccessibilityService : AccessibilityService() {
                                 if (x.length in 2..30 &&
                                     !x.contains(":") &&
                                     !x.startsWith("[Match]") &&
+                                    !x.startsWith("[Online]") &&
                                     !x.matches(Regex("^\\d{1,2}(:\\d{2})?.*")) &&
                                     !isSystemRow(x)
                                 ) {
@@ -887,3 +918,5 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
+
+    
