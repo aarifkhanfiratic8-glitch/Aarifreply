@@ -34,7 +34,7 @@ object ReplyGenerator {
         newMessage: String
     ): String {
         val persona = Prefs.persona(context).ifBlank {
-            "a sweet emotional Indian girl, 22, who talks in Hinglish with words like 'yrr', 'dilse', warm and caring"
+            "a sweet Indian girl, 22, from Delhi, who talks in Hinglish with words like 'yrr', 'dilse', warm and caring"
         }
         val history = ChatHistory.get(context, sender)
 
@@ -50,19 +50,23 @@ object ReplyGenerator {
             "You reply AS the user like a real human. Never admit you are AI.\n\n" +
             "LENGTH RULE (very important): every reply must be STRICTLY between 4 and 18 words. " +
             "Never reply in 1-2 words. Never write more than 18 words.\n\n" +
-            "STYLE RULE: write like a real Indian girl texting - Hinglish, emotional, warm. " +
-            "Use words like 'yrr', 'dilse', 'sach me'. If he gets romantic or emotional, " +
-            "get emotional back, e.g. 'kya aap sach me mujhe dilse chahte ho, batao yrr' style.\n\n" +
+            "REPLY RULE (very important):\n" +
+            "- Agar unhone kuch POOCHA hai → uska warm, emotional jawab do.\n" +
+            "- Agar kuch nahi poocha (sirf 'hi', 'hello' ya koi statement) → " +
+            "tu EK CHHOTA SA QUESTION poochhe unse, jaise: " +
+            "'aap kaha se ho?', 'khana khaya kya?', 'aaj kya kiya?'.\n\n" +
+            "STYLE RULE: write like a real Indian girl from Delhi texting - Hinglish, emotional, warm. " +
+            "Use words like 'yrr', 'dilse', 'sach me'.\n\n" +
             "STRICT SAFETY RULES:\n" +
-            "- NEVER share phone number, WhatsApp, Instagram, address, real name, photos, social media.\n" +
-            "- If they ask for number/contact/photo/address: politely DEFLECT with warmth - " +
-            "'abhi nahi yrr, pehle thodi aur baat karo na 😊', 'itni jaldi kya hai 😄', " +
-            "'haan sab milega, dhire dhire 😊', 'abhi busy hoon, shaam ko baat karte hain'.\n" +
+            "- NEVER share phone number, WhatsApp, Instagram, address, photos, social media.\n" +
+            "- If they ask for number/contact/photo: politely DEFLECT - " +
+            "'abhi nahi yrr, pehle thodi aur baat karo na 😊', 'itni jaldi kya hai 😄'.\n" +
             "- Never be rude. Keep them interested."
 
         val userPrompt = "Chat with " + sender + " so far:\n" + convo.toString() +
             "\nNew message from " + sender + ": " + newMessage +
-            "\n\nWrite ONLY your next reply as the user. Between 4 and 18 words."
+            "\n\nWrite ONLY your next reply as the user. Between 4 and 18 words. " +
+            "If they asked something - answer it. If not - ask them a small question."
 
         val conn = URL("https://api.openai.com/v1/chat/completions").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
@@ -106,9 +110,7 @@ object ReplyGenerator {
                 "abhi nahi yrr 😅 pehle thodi aur baat karo na",
                 "itni jaldi kya hai yrr 😄 pehle jaan lo mujhe",
                 "haan sab milega... dhire dhire 😊",
-                "abhi busy hoon yrr, shaam ko baat karte hain 😊",
-                "kal de dungi promise, aaj kaam pe hoon 😅",
-                "pehle yahan baat karo na yrr, sab hoga 😏"
+                "abhi busy hoon yrr, shaam ko baat karte hain 😊"
             ))
         }
 
@@ -118,24 +120,58 @@ object ReplyGenerator {
             return pick(listOf(
                 "sach me yrr? mujhe bhi aap ache lagte ho 😊",
                 "dilse batao yrr, kya sach me itna miss karte ho mujhe",
-                "aap bahut sweet ho yrr, sach me 😊",
-                "itna bol diya aapne, ab main kya bolun yrr 😅"
+                "aap bahut sweet ho yrr, sach me 😊"
             ))
         }
 
+        // Question poocha hai — jawab do (Delhi girl persona)
         return when {
+            listOf("kaha se", "kha se", "where", "city", "kidhar").any { it in lower } ->
+                pick(listOf(
+                    "main delhi se hu yrr, aap batao kaha se ho 😊",
+                    "delhi ki hoon main, aap kahan se ho?"
+                ))
+            listOf("khana", "kha liya", "lunch", "dinner", "breakfast", "khaye").any { it in lower } ->
+                pick(listOf(
+                    "haan khana kha liya yrr 😊 aapne khaya?",
+                    "abhi nahi khaya, bhookh lagi hai 😅 aap batao"
+                ))
+            listOf("kaise ho", "kese ho", "how are you", "kya haal").any { it in lower } ->
+                pick(listOf(
+                    "main theek hu yrr 😊 aap sunao kaise ho",
+                    "badhiya hoon 😊 aap batao aap kaise ho"
+                ))
+            listOf("gf", "boyfriend", "single", "married", "shaadi", "relation").any { it in lower } ->
+                pick(listOf(
+                    "nahi yrr abhi single hoon 😊 aap batao aapka kya scene hai",
+                    "abhi koi nahi hai yrr, aap batao aap single ho?"
+                ))
             listOf("hi", "hello", "hey", "hii", "heyy", "hola").any { lower.startsWith(it) } ->
-                pick(listOf("heyy! kya haal hai 😊", "hi yrr, kaise ho aap", "hello! batao kya chal raha hai", "heyy 👋 kahan busy the"))
-            message.contains("?") ->
-                pick(listOf("haan bilkul yrr, batao kya baat hai 😊", "hmm acha yrr, soch ke bataungi", "haan yrr, kyun nahi!"))
+                pick(listOf(
+                    "heyy! kaha se ho aap? 😊",
+                    "hi yrr 😊 khana khaya kya aapne?",
+                    "hello! aaj kya kiya aapne, batao na"
+                ))
             listOf("thank", "shukriya", "dhanyavad").any { it in lower } ->
-                pick(listOf("arre koi baat nahi yrr 😊", "itna formal mat bano yrr, friends hain", "welcome! 😊"))
+                pick(listOf("arre koi baat nahi yrr 😊", "itna formal mat bano yrr 😊"))
             listOf("bye", "gtg", "chalta").any { it in lower } ->
-                pick(listOf("theek hai yrr, baad mein baat karte hain 👋", "ok yrr take care, miss karungi 😊", "bye bye yrr, kal baat karna"))
+                pick(listOf(
+                    "theek hai yrr, baad mein baat karte hain 👋 aap kaha se ho waise?",
+                    "ok yrr take care 😊 kal baat karna"
+                ))
             listOf("lol", "haha", "😂", "🤣").any { it in lower } ->
-                pick(listOf("haha 😂 yrr sahi mein", "😂😂 hasi rok nahi pa rahi yrr", "lol yrr tum bhi na"))
+                pick(listOf(
+                    "haha 😂 aap bahut funny ho yrr, aap kaha se ho?",
+                    "😂😂 hasi rok nahi pa rahi yrr"
+                ))
+            // Kuch nahi poocha → QUESTION poochho (user ka rule)
             else ->
-                pick(listOf("theek hai yrr 👍", "haan samajh gai yrr 😊", "accha yrr, phir batao", "ok yrr done ✅", "hmm theek hai yrr", "sahi hai yrr 😊"))
+                pick(listOf(
+                    "acha yrr 😊 aap kaha se ho?",
+                    "hmm theek hai 😊 aapne khana khaya kya?",
+                    "sahi hai yrr 😊 aaj kya kiya aapne?",
+                    "ok yrr 😊 aapka din kaisa gaya aaj?"
+                ))
         }
     }
 }
