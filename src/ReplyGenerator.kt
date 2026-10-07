@@ -97,17 +97,18 @@ object ReplyGenerator {
         val systemPrompt = "You are " + persona + " chatting with \"" + sender + "\". " +
             "Reply AS her like a real human. Never admit you are AI.\n\n" +
             "RULE 1 - PEHLE JAWAB, PHIR SAWAAL: unka message dhyan se padho: \"" + newMessage + "\"\n" +
-            "- Agar unhone sawaal poocha ya kuch maanga (jaise 'bolo na', 'kya chahte ho', 'kya kar rahi ho', 'kahan ho', '?') → " +
+            "- Agar unhone sawaal poocha ya kuch maanga (jaise 'bolo na', 'kya chahte ho', 'kya kar rahi ho', 'age kya hai', 'pic', '?') → " +
             "PEHLE uska warm jawab do, phir ek chhota question\n" +
-            "Jawab examples: 'bolo na' → pehle apne baare me kuch batao (academy, din kaisa gaya) phir question | " +
+            "Jawab examples: 'bolo na' → pehle apne baare me kuch batao phir question | " +
             "'kya chahte ho' → 'bas tumse dosti karni hai yrr, tum ache lagte ho' | " +
-            "'kya kar rahi ho' → 'tumse hi baat kar rahi hoon 😊'\n" +
+            "'age poocha' → apni age batao (27) aur unki age pe kuch sweet bolo | " +
+            "'pic maanga' → 'abhi nahi yrr, pehle thodi aur baat karo na 😊'\n" +
             "- Agar kuch nahi poocha → emotional question poochho (haal chal, kab milna, kya sochte ho mere baare me)\n\n" +
             "RULE 2 - KABHI REPEAT MAT KARO. Ye messages tum pehle bhej chuki ho:\n" +
             alreadyAsked.joinToString(" | ") + "\n" +
             "In jaise messages MAT bhejo. Naya aur fresh bolo.\n\n" +
             "RULE 3 - STYLE: Hinglish, warm, emotional, thodi naughty but decent. " +
-            "Words: 'yrr', 'dilse', 'sach me'. STRICT 4 to 18 words. Unka naam kabhi-kabhi bulaao.\n\n" +
+            "Words: 'yrr', 'dilse', 'sach me'. STRICT 4 to 18 words.\n\n" +
             "SAFETY: number/WhatsApp/Insta/photos kabhi share mat karo."
 
         val userPrompt = "Full chat history:\n" + histText +
@@ -151,7 +152,28 @@ object ReplyGenerator {
             return pick(if (fresh.isEmpty()) questionBank else fresh)
         }
 
-        // === RULE 1: PEHLE JAWAB - sawaal/maang wale messages ===
+        // === JAWAB-FIRST INTENTS ===
+
+        // pic/photo maanga
+        val asksPic = listOf("pic", "photo", "selfi", "pic do", "photo do").any { it in lower }
+        if (asksPic) {
+            return pick(listOf(
+                "abhi nahi yrr 😅 pehle thodi aur baat karo na, " + freshQuestion(),
+                "itni jaldi kya hai 😊 pehle mujhe jaan lo, " + freshQuestion()
+            ))
+        }
+
+        // age poocha ("your" bhi pakdega, "message" jaise words nahi phasenge)
+        val asksAge = lower.contains("age") &&
+                listOf("aapke", "aapki", "aap ki", "teri", "tumhari", "tumhara", "your").any { it in lower }
+        if (asksAge) {
+            return pick(listOf(
+                "meri age 27 hai yrr 😊 aur aap? waise bade lagte nahi ho, " + freshQuestion(),
+                "main 27 ki hoon 😊 aap batao apne baare me kuch, " + freshQuestion()
+            ))
+        }
+
+        // bolo na / tum batao
         val wantsUsToTalk = listOf("bolo na", "bolo", "aap bolo", "tum bolo", "batao na", "batao kuch", "aap batao").any { it in lower }
         if (wantsUsToTalk) {
             return pick(listOf(
@@ -161,6 +183,7 @@ object ReplyGenerator {
             ))
         }
 
+        // kya chahte ho
         val asksIntent = listOf("kiya chahte", "kya chahte", "kya chahiye", "kya chahti").any { it in lower }
         if (asksIntent) {
             return pick(listOf(
@@ -170,17 +193,21 @@ object ReplyGenerator {
             ))
         }
 
-        val asksDoing = listOf("kya kar rahi", "kya kr rhi", "kya kar rahe ho aap", "kya ho raha", "kya kr rhi ho").any { it in lower }
+        // kya karte ho / kya kar rahi ho / job
+        val asksDoing = listOf(
+            "kya kar rahi", "kya kr rhi", "kya karte", "kya krte", "kya karta",
+            "kya kar rahe", "kya ho raha", "kya krti", "job", "kaam", "teacher"
+        ).any { it in lower }
         if (asksDoing) {
             return pick(listOf(
-                "bas tumse hi baat kar rahi hoon yrr 😊 " + freshQuestion(),
-                "abhi free thi, tumhari yaad aa gayi 😊 " + freshQuestion(),
-                "kuch nahi, tumhara wait kar rahi thi 😊 " + freshQuestion()
+                "main fashion design teacher hoon yrr, academy me 😊 " + freshQuestion(),
+                "bas tumse hi baat kar rahi hoon abhi 😊 " + freshQuestion(),
+                "academy me padhati hoon, fashion design 😊 " + freshQuestion()
             ))
         }
 
-        val hasQuestionMark = lower.contains("?")
-        if (hasQuestionMark) {
+        // koi bhi ? wala sawaal
+        if (lower.contains("?")) {
             return pick(listOf(
                 "sach batau? tumse baat karna hi sabse acha lagta hai 😊 " + freshQuestion(),
                 "hmm soch rahi hoon... pehle tum apna batao na 😊 " + freshQuestion(),
@@ -188,10 +215,10 @@ object ReplyGenerator {
             ))
         }
 
-        // === existing intents ===
+        // === EXISTING INTENTS ===
         val personalAsk = listOf(
             "number", "numbr", "no do", "whatsapp", "wp do", "insta", "instagram",
-            "photo", "pic", "selfi", "address", "ghar kaha", "real me mil",
+            "address", "ghar kaha", "real me mil",
             "facebook", "fb do", "snap", "call karo", "phone"
         ).any { it in lower }
         if (personalAsk) {
@@ -225,11 +252,6 @@ object ReplyGenerator {
                 pick(listOf(
                     "main theek hu yrr 😊 " + freshQuestion(),
                     "badhiya hoon 😊 " + freshQuestion()
-                ))
-            listOf("job", "study", "kaam kya", "teacher", "academy").any { it in lower } ->
-                pick(listOf(
-                    "main fashion design teacher hoon yrr, academy me 😊 " + freshQuestion(),
-                    "teacher hoon, fashion design ki 😊 " + freshQuestion()
                 ))
             listOf("gf", "boyfriend", "single", "married", "shaadi", "relation").any { it in lower } ->
                 pick(listOf(
