@@ -43,12 +43,18 @@ class AutoAccessibilityService : AccessibilityService() {
     private var wrongPkgCount: Int = 0
     private val handledAt: HashMap<String, Long> = HashMap()
 
+    // === NAYE LOCKS: one-time paste + no double analyze ===
+    @Volatile private var sending: Boolean = false
+    @Volatile private var analyzing: Boolean = false
+    private var analyzedKey: String = ""
+    private var analyzedAt: Long = 0L
+
     private val casuals: List<String> = listOf(
-        "kya kar rahe ho aaj",
-        "aaj kya khaya aapne",
-        "kahan busy ho yrr, batao na",
-        "kya chal raha hai aajkal",
-        "hello ji, miss kar rahi thi"
+        "aap kaha se ho batao na",
+        "khana khaya kya aapne",
+        "aaj kya kiya aapne, batao na",
+        "kya kar rahe ho aajkal",
+        "aapke yahan mausam kaisa hai"
     )
 
     override fun onServiceConnected() {
@@ -89,6 +95,9 @@ class AutoAccessibilityService : AccessibilityService() {
         queueActive = true
         expectingChat = false
         wrongPkgCount = 0
+        sending = false
+        analyzing = false
+        analyzedKey = ""
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         try { wakeLock?.release() } catch (_: Exception) { }
@@ -99,12 +108,14 @@ class AutoAccessibilityService : AccessibilityService() {
         showOverlay()
         updatePauseBtn()
         dbg("Queue ON")
-        qHandler.postDelayed(queueStep, 1500)
+        qHandler.postDelayed(queueStep, 2000)
     }
 
     fun stopQueue() {
         queueActive = false
         expectingChat = false
+        sending = false
+        analyzing = false
         qHandler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
@@ -200,7 +211,8 @@ class AutoAccessibilityService : AccessibilityService() {
             pauseBtn?.setBackgroundColor(0xFFC62828.toInt())
         }
     }
-        private fun isInChat(root: AccessibilityNodeInfo): Boolean {
+
+    private fun isInChat(root: AccessibilityNodeInfo): Boolean {
         val field: AccessibilityNodeInfo = findInput(root) ?: return false
         val r = Rect()
         field.getBoundsInScreen(r)
@@ -221,7 +233,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
             val root: AccessibilityNodeInfo? = rootInActiveWindow
             if (root == null) {
-                qHandler.postDelayed(this, 2000)
+                qHandler.postDelayed(this, 2500)
                 return
             }
 
@@ -229,7 +241,7 @@ class AutoAccessibilityService : AccessibilityService() {
             if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
                 wrongPkgCount++
                 if (wrongPkgCount < 3) {
-                    qHandler.postDelayed(this, 2000)
+                    qHandler.postDelayed(this, 2500)
                     return
                 }
                 dbg("PAUSED (user in other app)")
@@ -240,7 +252,7 @@ class AutoAccessibilityService : AccessibilityService() {
             wrongPkgCount = 0
 
             if (currentPkg != pkg) {
-                qHandler.postDelayed(this, 3000)
+                qHandler.postDelayed(this, 3500)
                 return
             }
 
@@ -253,7 +265,7 @@ class AutoAccessibilityService : AccessibilityService() {
                     cancelBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }
                 expectingChat = false
-                qHandler.postDelayed(this, 3000)
+                qHandler.postDelayed(this, 3500)
                 return
             }
 
@@ -267,6 +279,12 @@ class AutoAccessibilityService : AccessibilityService() {
                 dbg("Chat opened: " + lastSender)
                 armWatchdog()
                 analyzeChat(root)
+                return
+            }
+
+            // AI reply ya paste chal raha hai to haath mat lagao
+            if (sending || analyzing) {
+                qHandler.postDelayed(this, 3000)
                 return
             }
 
@@ -284,13 +302,13 @@ class AutoAccessibilityService : AccessibilityService() {
                     chatBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     expectingChat = true
                     qHandler.removeCallbacksAndMessages(null)
-                    qHandler.postDelayed(this, 8000)
+                    qHandler.postDelayed(this, 9000)
                     return
                 }
                 dbg("Other screen - back to list")
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 expectingChat = false
-                qHandler.postDelayed(this, 2500)
+                qHandler.postDelayed(this, 3000)
                 return
             }
 
@@ -307,6 +325,10 @@ class AutoAccessibilityService : AccessibilityService() {
             val pick: Pair<AccessibilityNodeInfo, String> = fresh[0]
             lastSender = pick.second
             handledAt[pick.second] = System.currentTimeMillis()
+            // naya chat = naye locks
+            sending = false
+            analyzing = false
+            analyzedKey = ""
             dbg("Open: " + pick.second)
             clickRowTextArea(pick.first, pick.second)
             expectingChat = true
@@ -319,24 +341,48 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.removeCallbacksAndMessages(null)
         qHandler.postDelayed({
             if (queueActive) {
-                val root: AccessibilityNodeInfo? = rootInActiveWindow
-                if (root != null && isInChat(root)) {
-                    dbg("Watchdog: back to list")
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                // reply ke beech watchdog tang na kare
+                if (!sending && !analyzing) {
+                    val root: AccessibilityNodeInfo? = rootInActiveWindow
+                    if (root != null && isInChat(root)) {
+                        dbg("Watchdog: back to list")
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                    }
+                    sending = false
+                    analyzing = false
+                    analyzedKey = ""
+                    qHandler.postDelayed(queueStep, 3000)
+                } else {
+                    armWatchdog()
                 }
-                qHandler.postDelayed(queueStep, 2500)
             }
-        }, 40000)
+        }, 60000)
     }
 
     private fun analyzeChat(root: AccessibilityNodeInfo) {
+        // same chat dobara analyze na ho (30 min lock)
+        val key: String = lastSender
+        if (analyzing) return
+        if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
+            dbg("Already analyzed - skip")
+            qHandler.postDelayed(queueStep, 4000)
+            return
+        }
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
+        if (msgs.isEmpty()) {
+            dbg("No msgs - wait")
+            qHandler.postDelayed(queueStep, 4000)
+            return
+        }
+        analyzedKey = key
+        analyzedAt = System.currentTimeMillis()
+        analyzing = true
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
         if (last != null && !last.second) {
             dbg("Their msg - AI reply")
             handleTheirMessage(msgs, lastSender)
         } else {
-            dbg("Our last/none - casual msg")
+            dbg("Our last/none - question poocho")
             sendCasualText()
         }
     }
@@ -358,6 +404,7 @@ class AutoAccessibilityService : AccessibilityService() {
             val reply: String? = try {
                 ReplyGenerator.generate(this, sender, contextLines, newMsg)
             } catch (e: Exception) { null }
+            analyzing = false
             if (reply.isNullOrBlank()) {
                 dbg("AI failed - casual fallback")
                 handler.post { sendCasualText() }
@@ -419,13 +466,30 @@ class AutoAccessibilityService : AccessibilityService() {
         return false
     }
 
+    // === ONE-TIME PASTE: sending lock ke bina dobara paste nahi ===
     private fun typeAndSend(reply: String) {
+        if (sending) {
+            dbg("Already sending - skip")
+            return
+        }
+        sending = true
         handler.postDelayed({
             val root: AccessibilityNodeInfo? = rootInActiveWindow
-            if (root == null) return@postDelayed
+            if (root == null) {
+                sending = false
+                return@postDelayed
+            }
             val field: AccessibilityNodeInfo? = findInput(root)
             if (field == null) {
                 dbg("No input field - NO back")
+                sending = false
+                return@postDelayed
+            }
+            // agar field mein pehle se yehi text hai to dobara paste mat karo
+            val existing: String = field.text?.toString() ?: ""
+            if (existing.trim() == reply.trim()) {
+                dbg("Already pasted - direct SEND")
+                handler.postDelayed({ trySendClick(0) }, 1000)
                 return@postDelayed
             }
             dbg("Pasting...")
@@ -443,7 +507,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 val txt: String = field2?.text?.toString() ?: ""
                 if (txt.isNotBlank()) {
                     dbg("Paste confirmed")
-                    handler.postDelayed({ trySendClick(0) }, 800)
+                    handler.postDelayed({ trySendClick(0) }, 1200)
                 } else {
                     dbg("Retry with SET_TEXT")
                     val args = Bundle()
@@ -461,41 +525,47 @@ class AutoAccessibilityService : AccessibilityService() {
                         val t3: String = field3?.text?.toString() ?: ""
                         if (t3.isNotBlank()) {
                             dbg("Text confirmed")
-                            handler.postDelayed({ trySendClick(0) }, 800)
+                            handler.postDelayed({ trySendClick(0) }, 1200)
                         } else {
                             dbg("No text - NO back, waiting")
+                            sending = false
                         }
-                    }, 900)
+                    }, 1200)
                 }
-            }, 900)
-        }, 800)
+            }, 1200)
+        }, 1200)
     }
-        private fun trySendClick(attempt: Int) {
-        if (attempt > 12) {
+
+    private fun trySendClick(attempt: Int) {
+        if (attempt > 10) {
             dbg("Send button NOT found - NO back, waiting")
+            sending = false
+            qHandler.postDelayed(queueStep, 5000)
             return
         }
         val root: AccessibilityNodeInfo = rootInActiveWindow ?: return
         val send: AccessibilityNodeInfo? = findSendButton(root, 0)
         if (send == null) {
-            handler.postDelayed({ trySendClick(attempt + 1) }, 500)
+            handler.postDelayed({ trySendClick(attempt + 1) }, 700)
             return
         }
         dbg("Clicking SEND")
         val ok: Boolean = send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         if (ok) {
             dbg("SENT!")
-            handler.postDelayed({ goNextOrBack() }, 3000)
+            handler.postDelayed({ goNextOrBack() }, 4000)
             return
         }
-        handler.postDelayed({ trySendClick(attempt + 1) }, 500)
+        handler.postDelayed({ trySendClick(attempt + 1) }, 700)
     }
 
     private fun goNextOrBack() {
+        sending = false
+        analyzing = false
         handler.postDelayed({
             val clicked: Boolean = findNextUnreadAndClick()
             if (!clicked) backToListIfInChat()
-        }, 2000)
+        }, 3000)
     }
 
     private fun findNextUnreadAndClick(): Boolean {
@@ -505,6 +575,10 @@ class AutoAccessibilityService : AccessibilityService() {
             val ok: Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (ok) {
                 expectingChat = true
+                // naya chat = locks reset
+                sending = false
+                analyzing = false
+                analyzedKey = ""
                 dbg("Next unread clicked")
                 armWatchdog()
                 return true
@@ -518,9 +592,9 @@ class AutoAccessibilityService : AccessibilityService() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         if (root != null && isInChat(root)) {
             performGlobalAction(GLOBAL_ACTION_BACK)
-            qHandler.postDelayed(queueStep, 2800)
+            qHandler.postDelayed(queueStep, 3500)
         } else {
-            qHandler.postDelayed(queueStep, 2500)
+            qHandler.postDelayed(queueStep, 3000)
         }
     }
 
@@ -602,7 +676,7 @@ class AutoAccessibilityService : AccessibilityService() {
             val nowH: Int = cal.get(java.util.Calendar.HOUR_OF_DAY)
             val nowM: Int = cal.get(java.util.Calendar.MINUTE)
             val diff: Int = kotlin.math.abs((h * 60 + m) - (nowH * 60 + nowM))
-            return diff <= 1
+            return diff <= 2
         } catch (e: Exception) {
             return false
         }
@@ -765,10 +839,189 @@ class AutoAccessibilityService : AccessibilityService() {
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
              event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         ) {
+            // reply/paste chal raha ho to event se disturb mat karo
+            if (sending || analyzing) return
             qHandler.removeCallbacks(queueStep)
-            qHandler.postDelayed(queueStep, 800)
+            qHandler.postDelayed(queueStep, 1500)
         }
     }
 
     override fun onInterrupt() { }
+}
+package com.autoreply.ai
+
+import android.content.Context
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.random.Random
+
+object ReplyGenerator {
+
+    fun generate(
+        context: Context,
+        sender: String,
+        screenLines: List<String>,
+        newMessage: String
+    ): String? {
+        if (newMessage.isBlank()) return null
+        val apiKey = Prefs.apiKey(context)
+        if (apiKey.isNotBlank()) {
+            try {
+                return askOpenAI(context, apiKey, sender, screenLines, newMessage)
+            } catch (e: Exception) {
+                // fail ho to templates
+            }
+        }
+        return localReply(newMessage)
+    }
+
+    private fun askOpenAI(
+        context: Context,
+        apiKey: String,
+        sender: String,
+        screenLines: List<String>,
+        newMessage: String
+    ): String {
+        val persona = Prefs.persona(context).ifBlank {
+            "a sweet Indian girl, 22, from Delhi, who talks in Hinglish with words like 'yrr', 'dilse', warm and caring"
+        }
+        val history = ChatHistory.get(context, sender)
+
+        val convo = StringBuilder()
+        screenLines.takeLast(14).forEach { convo.append(it).append("\n") }
+        if (history.isNotEmpty()) {
+            convo.append("Your previous replies in this chat: ")
+            convo.append(history.filter { it.first == "me" }.takeLast(5)
+                .joinToString(" | ") { it.second })
+        }
+
+        val systemPrompt = "You are " + persona + " chatting with \"" + sender + "\" on a dating app. " +
+            "You reply AS the user like a real human. Never admit you are AI.\n\n" +
+            "LENGTH RULE (very important): every reply must be STRICTLY between 4 and 18 words. " +
+            "Never reply in 1-2 words. Never write more than 18 words.\n\n" +
+            "REPLY RULE (very important):\n" +
+            "- Agar unhone kuch POOCHA hai → uska warm, emotional jawab do.\n" +
+            "- Agar kuch nahi poocha (sirf 'hi', 'hello' ya koi statement) → " +
+            "tu EK CHHOTA SA QUESTION poochhe unse, jaise: " +
+            "'aap kaha se ho?', 'khana khaya kya?', 'aaj kya kiya?'.\n\n" +
+            "STYLE RULE: write like a real Indian girl from Delhi texting - Hinglish, emotional, warm. " +
+            "Use words like 'yrr', 'dilse', 'sach me'.\n\n" +
+            "STRICT SAFETY RULES:\n" +
+            "- NEVER share phone number, WhatsApp, Instagram, address, photos, social media.\n" +
+            "- If they ask for number/contact/photo: politely DEFLECT - " +
+            "'abhi nahi yrr, pehle thodi aur baat karo na 😊', 'itni jaldi kya hai 😄'.\n" +
+            "- Never be rude. Keep them interested."
+
+        val userPrompt = "Chat with " + sender + " so far:\n" + convo.toString() +
+            "\nNew message from " + sender + ": " + newMessage +
+            "\n\nWrite ONLY your next reply as the user. Between 4 and 18 words. " +
+            "If they asked something - answer it. If not - ask them a small question."
+
+        val conn = URL("https://api.openai.com/v1/chat/completions").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 20000
+        conn.readTimeout = 20000
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey)
+
+        val body = JSONObject().apply {
+            put("model", "gpt-4o-mini")
+            put("temperature", 0.9)
+            put("max_tokens", 80)
+            put("messages", org.json.JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", systemPrompt))
+                put(JSONObject().put("role", "user").put("content", userPrompt))
+            })
+        }
+        conn.outputStream.use { it.write(body.toString().toByteArray()) }
+
+        if (conn.responseCode != 200) throw RuntimeException("HTTP " + conn.responseCode)
+        val resp = JSONObject(conn.inputStream.bufferedReader().readText())
+        val content = resp.getJSONArray("choices").getJSONObject(0)
+            .getJSONObject("message").getString("content")
+        val cleaned = content.trim().trim('"').trim()
+        return if (cleaned.isBlank()) throw RuntimeException("empty") else cleaned
+    }
+
+    private fun localReply(message: String): String {
+        val lower = message.lowercase().trim()
+        fun pick(list: List<String>) = list[Random.nextInt(list.size)]
+
+        // PERSONAL INFO maangi hai — kabhi share nahi, hamesha taalo
+        val personalAsk = listOf(
+            "number", "numbr", "no do", "whatsapp", "wp do", "insta", "instagram",
+            "photo", "pic", "selfi", "address", "ghar kaha", "milna hai", "real me mil",
+            "facebook", "fb do", "snap", "call karo", "phone"
+        ).any { it in lower }
+        if (personalAsk) {
+            return pick(listOf(
+                "abhi nahi yrr 😅 pehle thodi aur baat karo na",
+                "itni jaldi kya hai yrr 😄 pehle jaan lo mujhe",
+                "haan sab milega... dhire dhire 😊",
+                "abhi busy hoon yrr, shaam ko baat karte hain 😊"
+            ))
+        }
+
+        // romantic/emotional message — emotional jawab
+        val romantic = listOf("peyar", "pyaar", "pyar", "love", "dil", "miss", "marry", "shaadi", "jaan").any { it in lower }
+        if (romantic) {
+            return pick(listOf(
+                "sach me yrr? mujhe bhi aap ache lagte ho 😊",
+                "dilse batao yrr, kya sach me itna miss karte ho mujhe",
+                "aap bahut sweet ho yrr, sach me 😊"
+            ))
+        }
+
+        // Question poocha hai — jawab do (Delhi girl persona)
+        return when {
+            listOf("kaha se", "kha se", "where", "city", "kidhar").any { it in lower } ->
+                pick(listOf(
+                    "main delhi se hu yrr, aap batao kaha se ho 😊",
+                    "delhi ki hoon main, aap kahan se ho?"
+                ))
+            listOf("khana", "kha liya", "lunch", "dinner", "breakfast", "khaye").any { it in lower } ->
+                pick(listOf(
+                    "haan khana kha liya yrr 😊 aapne khaya?",
+                    "abhi nahi khaya, bhookh lagi hai 😅 aap batao"
+                ))
+            listOf("kaise ho", "kese ho", "how are you", "kya haal").any { it in lower } ->
+                pick(listOf(
+                    "main theek hu yrr 😊 aap sunao kaise ho",
+                    "badhiya hoon 😊 aap batao aap kaise ho"
+                ))
+            listOf("gf", "boyfriend", "single", "married", "shaadi", "relation").any { it in lower } ->
+                pick(listOf(
+                    "nahi yrr abhi single hoon 😊 aap batao aapka kya scene hai",
+                    "abhi koi nahi hai yrr, aap batao aap single ho?"
+                ))
+            listOf("hi", "hello", "hey", "hii", "heyy", "hola").any { lower.startsWith(it) } ->
+                pick(listOf(
+                    "heyy! kaha se ho aap? 😊",
+                    "hi yrr 😊 khana khaya kya aapne?",
+                    "hello! aaj kya kiya aapne, batao na"
+                ))
+            listOf("thank", "shukriya", "dhanyavad").any { it in lower } ->
+                pick(listOf("arre koi baat nahi yrr 😊", "itna formal mat bano yrr 😊"))
+            listOf("bye", "gtg", "chalta").any { it in lower } ->
+                pick(listOf(
+                    "theek hai yrr, baad mein baat karte hain 👋 aap kaha se ho waise?",
+                    "ok yrr take care 😊 kal baat karna"
+                ))
+            listOf("lol", "haha", "😂", "🤣").any { it in lower } ->
+                pick(listOf(
+                    "haha 😂 aap bahut funny ho yrr, aap kaha se ho?",
+                    "😂😂 hasi rok nahi pa rahi yrr"
+                ))
+            // Kuch nahi poocha → QUESTION poochho (user ka rule)
+            else ->
+                pick(listOf(
+                    "acha yrr 😊 aap kaha se ho?",
+                    "hmm theek hai 😊 aapne khana khaya kya?",
+                    "sahi hai yrr 😊 aaj kya kiya aapne?",
+                    "ok yrr 😊 aapka din kaisa gaya aaj?"
+                ))
+        }
+    }
 }
