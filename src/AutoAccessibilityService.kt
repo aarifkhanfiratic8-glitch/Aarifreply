@@ -234,7 +234,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-        // === HEARTBEAT: sirf backup - koi event miss ho to self-check ===
+    // === HEARTBEAT: sirf backup - koi event miss ho to self-check ===
     private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
@@ -243,7 +243,6 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }
     }
-
 
     private fun scheduleProcess(delayMs: Long) {
         qHandler.removeCallbacks(processRunnable)
@@ -464,6 +463,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
+    
         // === Conversation rule: unka msg = HAMESHA jawab | hamara/empty = ek greeting phir aage ===
     private fun handleChat(root: AccessibilityNodeInfo) {
         val key: String = lastSender
@@ -475,7 +475,6 @@ class AutoAccessibilityService : AccessibilityService() {
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
 
         if (last != null && !last.second) {
-            // unka naya message - hamesha jawab do (video 2 wala)
             if (analyzing) return
             analyzing = true
             analyzedKey = key
@@ -485,7 +484,6 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
 
-        // hamara message last hai ya kuch nahi
         if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
             dbg("Already replied - next/back")
             goNextOrBack()
@@ -611,7 +609,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-         private fun typeAndSend(reply: String) {
+        private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
             return
@@ -656,8 +654,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
-
-        // Send: pehle button NODE par direct CLICK (performAction) - row-click jaisa, yehi kaam karta hai
+    // Send: pehle button NODE par direct CLICK (performAction) - row-click jaisa
     private fun sendFlow(attempt: Int) {
         if (attempt > 10) {
             dbg("Send not working - recovery back")
@@ -714,7 +711,145 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 1300)
     }
 
-    // === EVENTS: har screen change par process() ===
+    private fun findSendNodeInRow(
+        root: AccessibilityNodeInfo,
+        fieldRect: Rect,
+        dw: Int
+    ): AccessibilityNodeInfo? {
+        val out = ArrayList<AccessibilityNodeInfo>()
+        collectRowClickables(root, fieldRect, dw, out, 0)
+        if (out.isEmpty()) return null
+        var best: AccessibilityNodeInfo? = null
+        var bestCx: Int = -1
+        for (n in out) {
+            val r = Rect()
+            n.getBoundsInScreen(r)
+            val cx: Int = (r.left + r.right) / 2
+            if (cx > bestCx) {
+                bestCx = cx
+                best = n
+            }
+        }
+        return best
+    }
+
+    private fun collectRowClickables(
+        node: AccessibilityNodeInfo,
+        fieldRect: Rect,
+        dw: Int,
+        out: ArrayList<AccessibilityNodeInfo>,
+        depth: Int
+    ) {
+        if (depth > 14) return
+        if (node.isClickable && node.isEnabled) {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            if (!r.isEmpty) {
+                val cx: Int = (r.left + r.right) / 2
+                val cy: Int = (r.top + r.bottom) / 2
+                val inRow: Boolean =
+                    cy >= fieldRect.top - 40 && cy <= fieldRect.bottom + 40
+                val rightEnd: Boolean = cx > dw * 0.78
+                val smallEnough: Boolean = r.width() <= fieldRect.width() / 2
+                if (inRow && rightEnd && smallEnough) {
+                    out.add(node)
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectRowClickables(c, fieldRect, dw, out, depth + 1)
+        }
+    }
+
+    private fun onSent() {
+        sending = false
+        handler.postDelayed({
+            goNextOrBack()
+        }, 2000)
+    }
+
+    private fun goNextOrBack() {
+        val root: AccessibilityNodeInfo? = rootInActiveWindow
+        if (root != null) {
+            val node: AccessibilityNodeInfo? = findNodeWithText(root, "next unread", 0)
+            if (node != null) {
+                val ok: Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (ok) {
+                    dbg("Next unread clicked")
+                    expectingChat = true
+                    sending = false
+                    analyzing = false
+                    analyzedKey = ""
+                    return
+                }
+            }
+        }
+        dbg("Back to list")
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    private fun findLeafWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 12) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.trim() == text && node.childCount == 0) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    private fun findNodeWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 14) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.contains(text, ignoreCase = true)) return node
+        val cd: String? = node.contentDescription?.toString()
+        if (cd != null && cd.contains(text, ignoreCase = true)) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findNodeWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    private fun tap(x: Float, y: Float) {
+        try {
+            val p = Path()
+            p.moveTo(x, y)
+            val g: GestureDescription = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(p, 0, 80))
+                .build()
+            dispatchGesture(g, null, null)
+        } catch (e: Exception) { }
+    }
+
+    private fun findInput(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            val child: AccessibilityNodeInfo? = node.getChild(i)
+            if (child != null) {
+                val found: AccessibilityNodeInfo? = findInput(child)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
         if (queueActive && pkg == Prefs.queuePkg(this)) {
