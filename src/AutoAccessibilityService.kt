@@ -234,13 +234,16 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    // === HEARTBEAT: sirf backup - koi event miss ho to self-check ===
-    private val heartbeatRunnable: Runnable = Runnable {
-        if (queueActive) {
-            process()
-            qHandler.postDelayed(heartbeatRunnable, 12000)
+        // === HEARTBEAT: sirf backup - koi event miss ho to self-check ===
+    private val heartbeatRunnable: Runnable = object : Runnable {
+        override fun run() {
+            if (queueActive) {
+                process()
+                qHandler.postDelayed(this, 12000)
+            }
         }
     }
+
 
     private fun scheduleProcess(delayMs: Long) {
         qHandler.removeCallbacks(processRunnable)
