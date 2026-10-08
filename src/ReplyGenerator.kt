@@ -91,6 +91,7 @@ object ReplyGenerator {
 
         BigHistory.add(context, sender, "them", newMessage)
 
+       
         val apiKey = Prefs.apiKey(context)
 
         val reply: String? = if (apiKey.isNotBlank()) {
@@ -152,6 +153,7 @@ object ReplyGenerator {
             "You are a fictional conversational character. " +
             "Your personality is: " + persona + "\n\n" +
 
+       
             "PERSONALITY:\n" +
             "You are fun-loving, khushmizaj, thodi naughty, thodi masti karnewali and full life wali. " +
             "Talk in natural Hinglish like casual WhatsApp conversation. " +
@@ -352,7 +354,8 @@ object ReplyGenerator {
         }
     }
 
-    private fun localReply(
+    // === PART 2 ISKE NICHE AAYEGA ===
+        private fun localReply(
         context: Context,
         sender: String,
         message: String
@@ -382,6 +385,7 @@ object ReplyGenerator {
             )
         }
 
+       
         val asksPic = listOf(
             "pic",
             "photo",
@@ -576,10 +580,7 @@ object ReplyGenerator {
             }
 
             listOf(
-                "kaise ho",
-                "kese ho",
-                "how are you"
-                kya haal",
+                "kya haal",
                 "haal chal"
             ).any { it in lower } -> {
                 pick(
@@ -700,3 +701,4 @@ object ReplyGenerator {
         }
     }
 }
+
