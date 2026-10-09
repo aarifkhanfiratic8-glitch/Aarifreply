@@ -1,8 +1,8 @@
 package com.autoreply.ai
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Context
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
@@ -13,22 +13,21 @@ import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 
-// [MACRO RECORDER]
+// [MACRO RECORDER] — v2 (no companion object, phone-paste safe)
 // REC ON karo -> tum Toki/WhatsApp pe jo bhi karo (click, type, wait) record hoga.
-// REC dubara dabao -> macro "m1" save ho jayega (app ke ji hisaab se alag).
+// REC dubara dabao -> macro "m1" save ho jayega (app ke hisaab se alag).
 // PLAY dabao -> app wahi steps khud repeat karega.
 //
 // IMPORTANT: Record karte waqt queue (ON/OFF) OFF rakho,
 // warna bot ke clicks bhi record ho jayenge.
 class MacroRecorder(private val service: AccessibilityService) {
 
-    companion object {
-        private const val PREFS = "macros"
-        @Volatile var isRecording: Boolean = false
-            private set
-        @Volatile var isPlaying: Boolean = false
-            private set
-    }
+    private val PREFS = "macros"
+
+    @Volatile var isRecording: Boolean = false
+        private set
+    @Volatile var isPlaying: Boolean = false
+        private set
 
     private val handler = Handler(Looper.getMainLooper())
     private var steps = JSONArray()
