@@ -52,16 +52,9 @@ class AutoAccessibilityService : AccessibilityService() {
 
     // [SV-CASUALS] short clean greetings — OFF/ON dono mein kabhi kabhi use
     private val casuals: List<String> = listOf(
-        "hii 😊",
-        "hello 😄",
-        "heyy 😊",
-        "kaise ho 😊",
-        "hii yrr 😄",
-        "namaste ji 😊",
-        "hello ji 😄",
-        "hii, batao kya chal raha 😊",
-        "hey 😄",
-        "hii ji 😊"
+        "thik hai😊",
+        "kya 😄",
+        "bolo na ji😊",
     )
 
     override fun onServiceConnected() {
