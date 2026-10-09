@@ -49,10 +49,8 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
-    // [SV-FLOW] Is file se KOI reply text nahi aata.
-    // Pehla message = ReplyGenerator.FIRST_MSG
-    // Baaki sab = ReplyGenerator (saved data -> templates)
-    // Ye file sirf screen control karti hai (open/read/send/next/back).
+    private var openedAt: Long = 0L
+    private var ourLastCount: Int = 0
 
     override fun onServiceConnected() {
         instance = this
@@ -96,6 +94,7 @@ class AutoAccessibilityService : AccessibilityService() {
         analyzing = false
         analyzedKey = ""
         pendingReply = ""
+        ourLastCount = 0
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         try { wakeLock?.release() } catch (_: Exception) { }
@@ -110,8 +109,6 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
-    // [SV-OFF-FIX] OFF = koi harkat NAHI + pending chains cancel
-    // (send retry / recovery-back / next-unread sab turant band)
     fun stopQueue() {
         queueActive = false
         expectingChat = false
@@ -126,8 +123,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-        // [SV-3D] 3D button helpers — gradient + round + shadow
-    private fun lighten(color: Int): Int {
+        private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
         val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
@@ -315,7 +311,9 @@ class AutoAccessibilityService : AccessibilityService() {
         if (isInChat(root)) {
             if (expectingChat) {
                 expectingChat = false
+                openedAt = System.currentTimeMillis()
                 dbg("Chat opened: " + lastSender)
+                return
             }
             handleChat(root)
             return
@@ -355,14 +353,14 @@ class AutoAccessibilityService : AccessibilityService() {
         sending = false
         analyzing = false
         analyzedKey = ""
+        ourLastCount = 0
         dbg("Open: " + pick.second)
         clickRowTextArea(pick.first, pick.second)
         expectingChat = true
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
-    
-    private fun findWorkRows(
+        private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
         val dw: Int = resources.displayMetrics.widthPixels
@@ -486,17 +484,24 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // [SV-FLOW] handleChat — is file se KOI text nahi. Sirf decision:
-    // unka msg -> ReplyGenerator | hamara msg -> next/back
+    // [SV-NOSKIP] chat khuli + reply baaki = kabhi skip nahi.
+    // Next unread / back sirf reply SENT hone ke baad.
     private fun handleChat(root: AccessibilityNodeInfo) {
+        if (System.currentTimeMillis() - openedAt < 2500) {
+            dbg("Chat loading...")
+            scheduleProcess(1200)
+            return
+        }
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         if (msgs.isEmpty()) {
-            dbg("No msgs yet - waiting for event")
+            dbg("No msgs yet - waiting")
+            scheduleProcess(2500)
             return
         }
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
         if (last != null && !last.second) {
+            ourLastCount = 0
             if (analyzing) return
             analyzing = true
             analyzedKey = key
@@ -505,8 +510,15 @@ class AutoAccessibilityService : AccessibilityService() {
             handleTheirMessage(msgs, key)
             return
         }
-        dbg("Our last - next/back")
-        goNextOrBack()
+        if (analyzedKey == key &&
+            System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
+            dbg("Already replied - next/back")
+            goNextOrBack()
+            return
+        }
+        ourLastCount++
+        dbg("Our last - waiting their msg (" + ourLastCount + ")")
+        scheduleProcess(3000)
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
@@ -521,8 +533,6 @@ class AutoAccessibilityService : AccessibilityService() {
             } catch (e: Exception) { null }
             analyzing = false
             if (reply.isNullOrBlank()) {
-                // [SV-FLOW] fail hua = service se kuch nahi bhejna.
-                // Bas is chat ko chhod ke aage badho.
                 dbg("Reply failed - skip chat")
                 handler.post { goNextOrBack() }
                 return@thread
@@ -627,7 +637,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // [SV-CHATNAME] chat header se bande ka naam — data usi ke naam se save
     private fun readChatName(root: AccessibilityNodeInfo): String {
         try {
             val dh: Int = resources.displayMetrics.heightPixels
@@ -669,8 +678,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        // [SV-RECORD] DATA SAVE — ON ho ya OFF, sirf ye. Toki + chat screen only.
-    private val recordHandler: Handler = Handler(Looper.getMainLooper())
+        private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
             val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
@@ -697,21 +705,15 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         sending = true
         pendingReply = reply
-        doSetText(0)
+        doSetText()
     }
 
-    private fun doSetText(tryCount: Int) {
-        if (tryCount > 4) {
-            dbg("Text failed - recovery back")
-            sending = false
-            analyzedKey = ""
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            return
-        }
+    // [SV-NOSKIP] KOI LIMIT NAHI — jab tak text set na ho, koshish jaari.
+    private fun doSetText() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
         if (field == null) {
-            handler.postDelayed({ doSetText(tryCount + 1) }, 600)
+            handler.postDelayed({ doSetText() }, 600)
             return
         }
         val args = Bundle()
@@ -727,31 +729,26 @@ class AutoAccessibilityService : AccessibilityService() {
             val txt: String = field2?.text?.toString() ?: ""
             if (txt.contains(pendingReply)) {
                 dbg("Text OK - sending")
-                sendFlow(0)
+                sendFlow()
             } else {
-                doSetText(tryCount + 1)
+                doSetText()
             }
         }, 700)
     }
 
-    private fun sendFlow(attempt: Int) {
-        if (attempt > 10) {
-            dbg("Send not working - recovery back")
-            sending = false
-            analyzedKey = ""
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            return
-        }
+    // [SV-NOSKIP] KOI LIMIT NAHI — jab tak SEND na ho, koshish jaari.
+    // Back/next unread sirf SENT ke baad.
+    private fun sendFlow() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
         if (root == null || field == null) {
-            handler.postDelayed({ sendFlow(attempt + 1) }, 700)
+            handler.postDelayed({ sendFlow() }, 700)
             return
         }
         val fr = Rect()
         field.getBoundsInScreen(fr)
         if (fr.isEmpty) {
-            handler.postDelayed({ sendFlow(attempt + 1) }, 700)
+            handler.postDelayed({ sendFlow() }, 700)
             return
         }
         val dw: Int = resources.displayMetrics.widthPixels
@@ -766,18 +763,18 @@ class AutoAccessibilityService : AccessibilityService() {
                 sy = ((br.top + br.bottom) / 2).toFloat()
             }
         }
-        if (attempt % 2 == 0 && btn != null) {
-            dbg("Click SEND " + attempt + " (node)")
+        if (btn != null) {
+            dbg("Click SEND (node)")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         } else {
-            dbg("Tap SEND " + attempt)
+            dbg("Tap SEND")
             tap(sx, sy)
         }
         handler.postDelayed({
             val root2: AccessibilityNodeInfo? = rootInActiveWindow
             val field2: AccessibilityNodeInfo? = if (root2 == null) null else findInput(root2)
             if (field2 == null) {
-                handler.postDelayed({ sendFlow(attempt + 1) }, 700)
+                handler.postDelayed({ sendFlow() }, 700)
                 return@postDelayed
             }
             val txt: String = (field2.text?.toString() ?: "").trim()
@@ -785,7 +782,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 dbg("SENT!")
                 onSent()
             } else {
-                sendFlow(attempt + 1)
+                sendFlow()
             }
         }, 900)
     }
@@ -878,6 +875,7 @@ class AutoAccessibilityService : AccessibilityService() {
                     sending = false
                     analyzing = false
                     analyzedKey = ""
+                    ourLastCount = 0
                     return
                 }
             }
@@ -947,7 +945,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // [SV-EVENTS] 1) DATA SAVE (ON/OFF) 2) automation sirf ON
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
         if (pkg != Prefs.queuePkg(this)) return
@@ -961,3 +958,5 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
+
+    
