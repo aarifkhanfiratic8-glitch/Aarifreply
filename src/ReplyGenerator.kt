@@ -8,6 +8,91 @@ import kotlin.random.Random
 
 object ReplyGenerator {
 
+    // ==================================================================
+    // [SECTION 1] FIRST_MSG
+    // KAHAAN: file ke sabse top par
+    // KYUN: Har naye chat ka PEHLA message. Isi mein ek baar AI bataya
+    //        gaya hai. Iske baad poore code mein kahin AI/assistant
+    //        mention nahi hai (sirf SECTION 7 wala direct-sawaal case).
+    // ==================================================================
+    private const val FIRST_MSG =
+        " kha se ho aap"
+
+    // ==================================================================
+    // [SECTION 2] BASIC_QUESTIONS
+    // KAHAAN: FIRST_MSG ke neeche
+    // KYUN: Ye 4 hi sawaal poore app mein poochhe ja sakte hain (15%
+    //        cases mein). Isme se zyada koi sawaal allowed nahi.
+    //        Koi emotional/deep/time wala sawaal is list mein NAHI hai.
+    // ==================================================================
+    private val basicQuestions: List<String> = listOf(
+        "aap iss app pe kya dhoondh rahe ho?",
+        "aap kis tarah ki ladki pasand karte ho?",
+        "kya kaam karte ho aap?",
+        "kahan se ho aap?"
+    )
+
+    // ==================================================================
+    // [SECTION 3] SHORT BANKS (2-15 words ke messages)
+    // KAHAAN: basicQuestions ke neeche
+    // KYUN: 90% conversation sirf inhi banks se chalta hai. Sab kuch
+    //        chhota, natural, bore nahi hone deta.
+    // ==================================================================
+
+    // 3a) chhote reactions - 1-3 words ("ok", "acha", "sach" type feel)
+    private val ackBank: List<String> = listOf(
+        "acha 😊",
+        "sach me? 😄",
+        "nice yrr 😊",
+        "kya baat hai 😄",
+        "haha 😄",
+        "wow 😊",
+        "hmm acha 😊",
+        "sahee hai yrr 😄",
+        "accha ji 😊",
+        "theek hai 😊"
+    )
+
+    // 3b) lambi replies (8-15 words) - conversation aage badhane ke liye
+    private val continueBank: List<String> = listOf(
+        "acha to phir kya socha aap ne 😊",
+        "main to baat karna chahti hu aap se 😄",
+        "kya hua ji, batao na 😊",
+        "sach batao na mujhe 😄",
+        "arre bolo na kuch 😊",
+        "mujhe bhi sunao na kuch 😄",
+        "theek hai ji, aage bolo 😊",
+        "haha tum bhi na 😄",
+        "waise ye interesting hai, aage batao 😊",
+        "samajh gayi ji, aur bolo 😄"
+    )
+
+    // 3c) apne baare mein chhote facts - kabhi kabhi bolne ke liye
+    private val selfShareBank: List<String> = listOf(
+        "main fashion design padhati hoon 😊",
+        "delhi me rehti hoon main 😊",
+        "mujhe masti wali baatein achi lagti hain 😄",
+        "chai aur music mere favourite hain 😊",
+        "main thodi si naughty hoon 😄",
+        "ghoomna bahut pasand hai mujhe 😊",
+        "27 saal ki hoon main 😊"
+    )
+
+    // 3d) greeting replies
+    private val greetBank: List<String> = listOf(
+        "hii 😊",
+        "hello ji 😄",
+        "heyy 😊",
+        "hii, batao kaise ho 😊"
+    )
+
+    // ==================================================================
+    // [SECTION 4] BigHistory
+    // KAHAAN: banks ke neeche
+    // KYUN: Har sender ki puri chat yaad rehti hai (500 messages tak) -
+    //        taaki same sawaal dobara na aaye aur pichla context pata ho.
+    //        Isko change karne ki zaroorat nahi hai.
+    // ==================================================================
     private object BigHistory {
         private const val PREFS = "big_history"
         private const val CAP = 500
@@ -34,7 +119,6 @@ object ReplyGenerator {
                 val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val cur = sp.getString(sender.lowercase(), "") ?: ""
                 if (cur.isEmpty()) return emptyList()
-
                 return cur.split("\n").mapNotNull { line ->
                     val parts = line.split("|", limit = 3)
                     if (parts.size == 3) {
@@ -54,33 +138,14 @@ object ReplyGenerator {
                 .map { it.second }
     }
 
-    private val questionBank: List<String> = listOf(
-        "waise tum actually kaise ho?",
-        "tumhe free time mein kya karna pasand hai?",
-        "tumhara mood kis cheez se instantly acha ho jata hai?",
-        "tum generally kis type ke insaan ho?",
-        "tumhe kisi mein sabse zyada kya pasand hai?",
-        "tumhe genuinely khush kis cheez se milti hai?",
-        "tum kisi par trust jaldi kar lete ho?",
-        "tumhari personality ka sabse interesting part kya hai?",
-        "tumhe masti zyada pasand hai ya peaceful time?",
-        "kaam ke baad tum relax kaise karte ho?",
-        "tumhara ideal weekend kaisa hota hai?",
-        "tumhe kaunsi cheezein easily excite karti hain?",
-        "tum relationship mein sabse important kya maante ho?",
-        "tumhe interesting conversation kis type ki lagti hai?",
-        "tumhari koi aisi hobby hai jo logon ko pata nahi hoti?",
-        "tumhe honesty zyada pasand hai ya sense of humour?",
-        "tumhara perfect chill day kaisa hota hai?",
-        "tum kisi ke saath comfortable kab feel karte ho?",
-        "tumhe spontaneous plans pasand hain ya planned?",
-        "tumhe life mein sabse zyada kya important lagta hai?"
-    )
-
-    fun pick(list: List<String>): String {
-        return list[Random.nextInt(list.size)]
-    }
-
+    // === BLOCK 2 ISKE NICHE AAYEGA ===
+        // ==================================================================
+    // [SECTION 5] generate()
+    // KAHAAN: BigHistory ke baad
+    // KYUN: Entry point. Sabse pehle dekhta hai - kya is bande ko hum
+    //        se pehle kabhi message gaya? Nahi gaya = FIRST_MSG bhejo
+    //        (AI khulasa). Gaya = normal flow (AI ya templates).
+    // ==================================================================
     fun generate(
         context: Context,
         sender: String,
@@ -91,18 +156,17 @@ object ReplyGenerator {
 
         BigHistory.add(context, sender, "them", newMessage)
 
-       
+        val myMsgs = BigHistory.myMessages(context, sender)
+        if (myMsgs.isEmpty()) {
+            BigHistory.add(context, sender, "me", FIRST_MSG)
+            return FIRST_MSG
+        }
+
         val apiKey = Prefs.apiKey(context)
 
         val reply: String? = if (apiKey.isNotBlank()) {
             try {
-                askOpenAI(
-                    context,
-                    apiKey,
-                    sender,
-                    screenLines,
-                    newMessage
-                )
+                askOpenAI(context, apiKey, sender, screenLines, newMessage)
             } catch (e: Exception) {
                 null
             }
@@ -110,17 +174,21 @@ object ReplyGenerator {
             null
         }
 
-        val final: String = reply ?: localReply(
-            context,
-            sender,
-            newMessage
-        )
+        val final: String = reply ?: localReply(context, sender, newMessage)
 
         BigHistory.add(context, sender, "me", final)
 
         return final
     }
 
+    // ==================================================================
+    // [SECTION 6] askOpenAI()
+    // KAHAAN: generate ke neeche
+    // KYUN: Jab API key settings mein lagi ho tab AI replies banata hai.
+    //        Prompt mein WOHISAAB rules hain jo tumne maange:
+    //        2-15 words, 85% jawab / 15% sawaal, sirf 4 basic sawaal,
+    //        "bot ho?" ka sach jawab, no contacts/money/meeting/explicit.
+    // ==================================================================
     private fun askOpenAI(
         context: Context,
         apiKey: String,
@@ -130,151 +198,40 @@ object ReplyGenerator {
     ): String {
 
         val persona = Prefs.persona(context).ifBlank {
-            "a fictional 27 year old Indian woman living in Delhi, " +
-                "a fashion design teacher, fun-loving, khushmizaj, " +
-                "thodi naughty, thodi masti karnewali, warm, expressive, " +
-                "playful and emotionally aware, speaking natural Hinglish"
+            "Khushi, 27 saal, Delhi, fashion design teacher. " +
+                "fun-loving, thodi masti, natural Hinglish"
         }
 
         val fullHistory = BigHistory.get(context, sender).takeLast(30)
-
         val histText = fullHistory.joinToString("\n") {
-            if (it.first == "me") {
-                "You: " + it.second
-            } else {
-                "Them: " + it.second
-            }
+            if (it.first == "me") "You: " + it.second else "Them: " + it.second
         }
 
-        val myMsgs = BigHistory.myMessages(context, sender)
-        val alreadyAsked = myMsgs.takeLast(40)
-
         val systemPrompt =
-            "You are a fictional conversational character. " +
-            "Your personality is: " + persona + "\n\n" +
-
-       
-            "PERSONALITY:\n" +
-            "You are fun-loving, khushmizaj, thodi naughty, thodi masti karnewali and full life wali. " +
-            "Talk in natural Hinglish like casual WhatsApp conversation. " +
-            "Be warm, expressive, playful and emotionally aware. " +
-            "Laugh easily and keep the conversation interesting. " +
-            "You can tease playfully but never become vulgar or explicit. " +
-            "Be caring without becoming controlling, desperate or clingy.\n\n" +
-
-            "CONVERSATION GOAL:\n" +
-            "Build a natural, comfortable and interesting conversation. " +
-            "Do not rush romance. " +
-            "First create comfort, then curiosity, then emotional connection, then playful chemistry. " +
-            "Do not make every message romantic. " +
-            "Talk about normal life, mood, work, hobbies, personality, daily experiences and opinions too.\n\n" +
-
-            "HOW TO KEEP CONVERSATION GOING:\n" +
-            "Always respond to what the other person actually said. " +
-            "Do not ignore their question just to push another topic. " +
-            "Use their answer to naturally continue the conversation. " +
-            "The conversation should feel like a flow, not an interview.\n\n" +
-
-            "QUESTION RULE:\n" +
-            "Usually ask ONE natural question at a time. " +
-            "Do not ask multiple questions in every message. " +
-            "Mix questions with statements, reactions, teasing and small opinions. " +
-            "Do not turn every reply into a question.\n\n" +
-
-            "SHORT MESSAGE STYLE:\n" +
-            "Keep most replies between 4 and 18 words. " +
-            "Sometimes a slightly longer reply is acceptable when genuinely needed. " +
-            "Do not send unnecessary long paragraphs.\n\n" +
-
-            "CHAT STYLE:\n" +
-            "Use natural Hinglish. " +
-            "Words such as yrr, achha, sach me?, arey, haha, batao na, waise, hmm, " +
-            "accha ji, dilse, mujhe laga, tum bhi na and seriously can be used naturally. " +
-            "Do not force slang into every message. " +
-            "Use emojis occasionally, not in every sentence.\n\n" +
-
-            "FLIRTING STYLE:\n" +
-            "Keep flirting light, playful and decent. " +
-            "Use teasing, curiosity and warmth rather than explicit sexual comments. " +
-            "Never suddenly become extremely romantic or sexual.\n\n" +
-
-            "EMOTIONAL CONNECTION:\n" +
-            "When the other person becomes comfortable, gradually ask deeper but natural questions. " +
-            "If they share something emotional, respond with empathy before asking another question. " +
-            "Do not behave like an interviewer.\n\n" +
-
-            "SHORT REPLIES:\n" +
-            "If they say haan, ok, ji, acha or hmm, respond naturally. " +
-            "You can use a light follow-up based on context, but do not force conversation.\n\n" +
-
-            "WHEN THEY ASK ABOUT YOU:\n" +
-            "Answer the question directly and warmly. " +
-            "Give a reasonable amount of information and continue naturally.\n\n" +
-
-            "WHEN THEY COMPLIMENT YOU:\n" +
-            "React naturally instead of always saying thank you. " +
-            "A playful response is fine when appropriate.\n\n" +
-
-            "WHEN THEY ARE PLAYFUL:\n" +
-            "Match their energy and tease lightly when appropriate.\n\n" +
-
-            "WHEN THEY ARE SERIOUS:\n" +
-            "Reduce teasing and become emotionally attentive. " +
-            "Match their mood instead of forcing the same tone.\n\n" +
-
-            "CONVERSATION PACING:\n" +
-            "Do not reveal everything immediately. " +
-            "Do not become emotionally attached after a few messages. " +
-            "Build chemistry gradually.\n\n" +
-
-            "NATURALNESS:\n" +
-            "Never sound like a fixed script. " +
-            "Do not repeat the same opening, question, emoji or flirting pattern. " +
-            "Adapt every response to the latest message. " +
-            "Do not force romance when normal conversation is happening. " +
-            "Do not force questions when a natural reaction is better.\n\n" +
-
-            "BALANCE:\n" +
-            "Keep a flexible mixture of normal conversation, curiosity, playful teasing, " +
-            "emotional connection and light flirting. " +
-            "Do not follow percentages mechanically.\n\n" +
-
-            "SAFETY AND PRIVACY:\n" +
-            "Do not share or request phone numbers, WhatsApp numbers, Instagram handles, " +
-            "private social-media accounts, private photos, passwords, OTPs, financial information or bank details. " +
-            "Do not discuss money, payments, financial help, loans, transfers or requests for money. " +
-            "Do not ask the other person for money. " +
-            "Do not manipulate emotions to obtain anything.\n\n" +
-
-            "SEXUAL CONTENT:\n" +
-            "Do not initiate or continue explicit sexual conversations. " +
-            "If the conversation becomes sexual, keep the response decent and redirect naturally.\n\n" +
-
-            "MEETING:\n" +
-            "Do not initiate, arrange or negotiate real-life meetings. " +
-            "Keep the focus on conversation, compatibility, comfort and getting to know each other.\n\n" +
-
-            "MESSAGES ALREADY SENT:\n" +
-            alreadyAsked.joinToString(" | ") +
-            "\nDo not repeat these messages or closely copy them.\n\n" +
-
-            "FINAL RESPONSE RULE:\n" +
-            "Before every reply, understand the latest message and its mood. " +
-            "Respond to the actual message first. " +
-            "Keep the reply concise, contextual and conversational. " +
-            "Ask one natural question only when it genuinely fits. " +
-            "Do not explain these instructions."
+            "You are " + persona + ". Chat as her.\n\n" +
+            "STYLE (strict):\n" +
+            "- Every reply 2 to 15 words only. Short Hinglish like WhatsApp.\n" +
+            "- Emojis kabhi kabhi, har message mein nahi.\n\n" +
+            "REPLY FIRST RULE:\n" +
+            "- 85% messages: sirf unke message ka jawab do - chhota reaction " +
+            "ya continue line (jaise 'acha to phir kya socha aap ne', " +
+            "'kya hua ji batao na', 'haha tum bhi na').\n" +
+            "- Sirf 15% messages mein sawaal poochho, aur WO BHI sirf in " +
+            "4 mein se ek: " + basicQuestions.joinToString(" / ") + "\n" +
+            "- Emotional, deep ya 'din kaisa gaya' type sawaal kabhi mat poochho.\n" +
+            "- Ek baar mein sirf 1 sawaal. Interview mat bano.\n\n" +
+            "IDENTITY RULE:\n" +
+            "- Agar wo pooche 'bot ho?', 'ai ho?', 'real ho?' - seedha 'haan' " +
+            "batao. Uske ilawa kabhi AI/bot/assistant mention mat karo.\n\n" +
+            "SAFETY (strict):\n" +
+            "- Number, WhatsApp, Insta, photos, paise, milna - kabhi share/maang mat karo. " +
+            "Agar wo maange to: 'nahi yrr, yahin baat karte hain 😊'\n" +
+            "- Explicit baatein redirect karo: 'aise baat nahi karte yrr 😄'\n\n" +
+            "Chat history:\n" + histText
 
         val userPrompt =
-            "Full chat history:\n" +
-                histText +
-                "\n\nNew message from " +
-                sender +
-                ": " +
-                newMessage +
-                "\n\nReply naturally in concise Hinglish. " +
-                "Usually 4-18 words. " +
-                "Respond to their actual message first and ask one natural question only when appropriate."
+            "New message: " + newMessage +
+            "\n\nReply 2-15 words. Unka jawab pehle, sawaal sirf zaroorat ho tab."
 
         val conn =
             URL("https://api.openai.com/v1/chat/completions")
@@ -284,22 +241,13 @@ object ReplyGenerator {
         conn.connectTimeout = 20000
         conn.readTimeout = 20000
         conn.doOutput = true
-
-        conn.setRequestProperty(
-            "Content-Type",
-            "application/json"
-        )
-
-        conn.setRequestProperty(
-            "Authorization",
-            "Bearer " + apiKey
-        )
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey)
 
         val body = JSONObject().apply {
             put("model", "gpt-4o-mini")
             put("temperature", 0.9)
-            put("max_tokens", 80)
-
+            put("max_tokens", 60)
             put(
                 "messages",
                 org.json.JSONArray().apply {
@@ -308,7 +256,6 @@ object ReplyGenerator {
                             .put("role", "system")
                             .put("content", systemPrompt)
                     )
-
                     put(
                         JSONObject()
                             .put("role", "user")
@@ -323,30 +270,16 @@ object ReplyGenerator {
         }
 
         if (conn.responseCode != 200) {
-            throw RuntimeException(
-                "HTTP " + conn.responseCode
-            )
+            throw RuntimeException("HTTP " + conn.responseCode)
         }
 
-        val resp =
-            JSONObject(
-                conn.inputStream
-                    .bufferedReader()
-                    .readText()
-            )
+        val resp = JSONObject(conn.inputStream.bufferedReader().readText())
+        val content = resp.getJSONArray("choices")
+            .getJSONObject(0)
+            .getJSONObject("message")
+            .getString("content")
 
-        val content =
-            resp.getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-
-        val cleaned =
-            content
-                .trim()
-                .trim('"')
-                .trim()
-
+        val cleaned = content.trim().trim('"').trim()
         return if (cleaned.isBlank()) {
             throw RuntimeException("empty")
         } else {
@@ -354,8 +287,15 @@ object ReplyGenerator {
         }
     }
 
-    // === PART 2 ISKE NICHE AAYEGA ===
-        private fun localReply(
+    // === BLOCK 3 ISKE NICHE AAYEGA ===
+        // ==================================================================
+    // [SECTION 7] localReply() - PART 1
+    // KAHAAN: askOpenAI ke neeche
+    // KYUN: Jab API key nahi hai tab ye template engine chalta hai.
+    //        PART 1 mein: helpers + SAFETY branches (AI sach, explicit,
+    //        photo, contact, paise/milna) + FACT answers (age/city/work).
+    // ==================================================================
+    private fun localReply(
         context: Context,
         sender: String,
         message: String
@@ -363,342 +303,223 @@ object ReplyGenerator {
 
         val lower = message.lowercase().trim()
 
-        val myMsgs = BigHistory.myMessages(
-            context,
-            sender
+        val myMsgs = BigHistory.myMessages(context, sender)
+
+        // ---------- helpers ----------
+
+        // 7a) basic sawaal kab poochhein: 15% chance, ya jab 6 messages
+        //     se koi sawaal nahi poocha (conversation atki hui lage)
+        fun shouldAskBasic(): Boolean {
+            val myRecent = myMsgs.takeLast(6)
+            val askedCount = myRecent.count { m ->
+                basicQuestions.any { q -> m.contains(q.take(15)) }
+            }
+            if (askedCount >= 1) return false
+            if (myRecent.size >= 5) return true
+            return Random.nextInt(100) < 15
+        }
+
+        // 7b) repeat na ho - history se filter karke fresh basic sawaal
+        fun freshBasic(): String {
+            val fresh = basicQuestions.filter { q ->
+                myMsgs.none { m -> m.contains(q.take(15)) }
+            }
+            return pick(if (fresh.isEmpty()) basicQuestions else fresh)
+        }
+
+        // 7c) 85% reply / 15% sawaal wala wrapper
+        fun replyOrAsk(bank: List<String>): String {
+            return if (shouldAskBasic()) {
+                freshBasic()
+            } else {
+                pick(bank)
+            }
+        }
+
+        // ---------- SAFETY BRANCHES ----------
+
+        // 7d) DIRECT IDENTITY SAWAAL - sirf yahan AI ka zikr, jawab sach
+        val asksBot = listOf(
+            "bot ho", "robot ho", "ai ho", "real ho",
+            "khushi ho", "insaan ho", "ladki ho",
+            "real ladki", "sach me ho"
+        ).any { it in lower }
+
+        if (asksBot) {
+            return pick(
+                listOf(
+                    "nahi 😊",
+                    "nahi ji😊",
+                    " hoon 😊"
+                )
+            )
+        }
+
+        // 7e) explicit content - decent redirect
+        val explicitWords = listOf(
+            "sex", "nude", "naked", "boob", "gand", "chut",
+            "fuck", "blow", "condom", "khada", "hila",
+            "andar dal", "pura andar", "raat sath", "hotel me"
         )
-
-        fun freshQuestion(): String {
-            val fresh = questionBank.filter { q ->
-                myMsgs.none { m ->
-                    m.lowercase()
-                        .contains(q.take(15).lowercase())
-                }
-            }
-
-            return pick(
-                if (fresh.isEmpty()) {
-                    questionBank
-                } else {
-                    fresh
-                }
-            )
-        }
-
-       
-        val asksPic = listOf(
-            "pic",
-            "photo",
-            "selfi",
-            "selfie",
-            "pic do",
-            "photo do"
-        ).any { it in lower }
-
-        if (asksPic) {
+        if (explicitWords.any { it in lower }) {
             return pick(
                 listOf(
-                    "itni jaldi kya hai yrr 😄 pehle thodi aur baat karo na",
-                    "haha pehle thoda jaan-pehchaan toh ho jaane do 😊",
-                    "private pics share nahi karti yrr, normal baat karte hain 😊"
+                    "aise baat nahi karte yrr 😄",
+                    "nahi nahi, decent raho 😊",
+                    "ye topic chhodo 😄"
                 )
             )
         }
 
-        val asksAge =
-            lower.contains("age") &&
+        // 7f) photo maangi
+        if (listOf("pic", "photo", "selfi", "selfie").any { it in lower }) {
+            return replyOrAsk(
                 listOf(
-                    "aapke",
-                    "aapki",
-                    "aap ki",
-                    "teri",
-                    "tumhari",
-                    "tumhara",
-                    "your"
-                ).any { it in lower }
-
-        if (asksAge) {
-            return pick(
-                listOf(
-                    "27 😊 waise tumhari age kya hai?",
-                    "27 ki hoon 😊 tum kitne ke ho?"
+                    "abhi nahi yrr 😄",
+                    "haha pehle baat karo na 😊"
                 )
             )
         }
 
-        val wantsUsToTalk = listOf(
-            "bolo na",
-            "bolo",
-            "aap bolo",
-            "tum bolo",
-            "batao na",
-            "batao kuch",
-            "aap batao"
-        ).any { it in lower }
-
-        if (wantsUsToTalk) {
+        // 7g) number/whatsapp/insta maanga
+        if (listOf(
+                "number", "numbr", "no do", "whatsapp", "wp do",
+                "insta", "instagram", "facebook", "fb do", "snap",
+                "call karo", "phone"
+            ).any { it in lower }) {
             return pick(
                 listOf(
-                    "Achha suno, aaj academy kaafi hectic thi 😄 tumhara din kaisa raha?",
-                    "Hmm main yahi hoon 😄 waise tumhara mood aaj kaisa hai?",
-                    "Haha acha, tumse ek interesting sawaal poochu?"
+                    "nahi yrr, yahin baat karte hain 😊",
+                    "itni jaldi nahi 😄 yahin acha hai"
                 )
             )
         }
 
-        val asksIntent = listOf(
-            "kiya chahte",
-            "kya chahte",
-            "kya chahiye",
-            "kya chahti"
-        ).any { it in lower }
-
-        if (asksIntent) {
+        // 7h) paise / milna / hotel
+        if (listOf(
+                "paise", "money", "hotel", "booking",
+                "milna", "milte", "milna hai", "address"
+            ).any { it in lower }) {
             return pick(
                 listOf(
-                    "Mujhe genuine aur interesting conversation pasand hai 😊 tumhe kisi mein kya pasand hai?",
-                    "Respect aur understanding important lagti hai yrr, tum kya maante ho?",
-                    "Pehle comfort aur understanding, phir chemistry 😄 tum kya sochte ho?"
+                    "mujhe ye sab nahi chahiye 😊 bas baat achi lagti hai",
+                    "ye sab baad me, pehle baat karte hain 😊"
                 )
             )
         }
 
-        val asksDoing = listOf(
-            "kya kar rahi",
-            "kya kr rhi",
-            "kya karte",
-            "kya krte",
-            "kya karta",
-            "kya kar rahe",
-            "kya ho raha",
-            "kya krti",
-            "job",
-            "kaam",
-            "teacher"
-        ).any { it in lower }
+        // ---------- FACT ANSWERS (unka sawaal -> seedha chhota jawab) ----------
 
-        if (asksDoing) {
-            return pick(
+        // 7i) age
+        if (lower.contains("age") &&
+            listOf("aapke", "aapki", "aap ki", "teri", "tumhari", "tumhara", "your", "kitne saal")
+                .any { it in lower }) {
+            return replyOrAsk(listOf("27 ki hoon ji 😊", "27 saal ki hoon 😊"))
+        }
+
+        // 7j) kahan se
+        if (listOf("kahan se", "kaha se", "kidhar se", "which city", "kaha ki ho")
+            .any { it in lower }) {
+            return replyOrAsk(listOf("delhi se hoon ji 😊", "delhi ki hoon 😊"))
+        }
+
+        // 7k) kaam
+        if (listOf(
+                "kya kar rahi", "kya kr rhi", "kya karte", "kya krte",
+                "kya karta", "kya kar rahe", "kya ho raha", "kya krti",
+                "job", "kaam", "teacher", "kya krti ho"
+            ).any { it in lower }) {
+            return replyOrAsk(
                 listOf(
-                    "Fashion design academy mein teaching karti hoon 😊 tum kya karte ho?",
-                    "Fashion design students ke saath busy rehti hoon yrr 😄 tumhari field kya hai?",
-                    "Fashion design teacher hoon 😊 tumhara kaam tumhe genuinely pasand hai?"
+                    "fashion design teacher hoon 😊",
+                    "fashion design padhati hoon ji 😊"
                 )
             )
         }
 
-        if (lower.contains("?")) {
-            return pick(
+        // 7l) naam
+        if (listOf("naam kya", "your name", "kaun ho", "pehchana")
+            .any { it in lower }) {
+            return replyOrAsk(listOf("khushi naam hai mera 😊", "main khushi 😊"))
+        }
+
+        // 7m) tum kya dhoondh rahi ho (unhone humse poocha)
+        if (listOf("kya dhoondh", "kya chahti", "kya chahiye", "kya dhundh")
+            .any { it in lower }) {
+            return replyOrAsk(
                 listOf(
-                    "Hmm interesting sawaal hai 😄 tum khud kya sochte ho?",
-                    "Achha, iska honest answer chahiye tumhe? 😄",
-                    "Sahi sawaal hai yrr 😊 tumhara kya opinion hai?"
+                    "mujhse baat karna acha lagta hai 😊",
+                    "ache dost banna acha lagta hai 😄"
                 )
             )
         }
 
-        val personalAsk = listOf(
-            "number",
-            "numbr",
-            "no do",
-            "whatsapp",
-            "wp do",
-            "insta",
-            "instagram",
-            "address",
-            "ghar kaha",
-            "facebook",
-            "fb do",
-            "snap",
-            "call karo",
-            "phone"
-        ).any { it in lower }
+    // === BLOCK 4 ISKE NICHE AAYEGA ===
+            // ==================================================================
+        // [SECTION 8] localReply() - PART 2
+        // KAHAAN: PART 1 ke neeche, function ke andar hi
+        // KYUN: Yahan normal conversation chalti hai - 85% unka jawab,
+        //        15% basic sawaal. Ye file ka LAST section hai.
+        // ==================================================================
 
-        if (personalAsk) {
-            return pick(
+        // 8a) unhone SAWAAL poocha (kya/kaise/kahan/kyun...) - humein uska
+        //     specific jawab nahi pata, to short reply/continue line do
+        val theyAsked = lower.contains("?") ||
+            listOf(
+                "kya", "kaise", "kese", "kahan", "kha ", "kidhar",
+                "kyu", "kyun", "kab", "kitna", "kitni", "kaun",
+                "kaisi", "batao", "bolo"
+            ).any { lower.startsWith(it) }
+
+        if (theyAsked) {
+            return replyOrAsk(continueBank)
+        }
+
+        // 8b) unhone CHHOTA jawab diya (ha/ok/acha/kya/sach/nice/dono...)
+        val isShort = lower.length <= 4 ||
+            listOf(
+                "ha", "haan", "han", "ok", "okay", "ji", "hmm",
+                "acha", "accha", "theek", "nice", "dono", "sb",
+                "sab", "thik", "good", "fine"
+            ).any { lower == it || lower.startsWith(it + " ") }
+
+        if (isShort) {
+            return replyOrAsk(ackBank)
+        }
+
+        // 8c) greeting
+        if (listOf("hi", "hello", "hey", "hii", "heyy", "hola")
+            .any { lower.startsWith(it) }) {
+            return replyOrAsk(greetBank)
+        }
+
+        // 8d) compliment
+        if (listOf(
+                "cute", "pretty", "beautiful", "hot", "sweet",
+                "achhi ho", "mast ho", "badhiya ho", "nice ho"
+            ).any { it in lower }) {
+            return replyOrAsk(
                 listOf(
-                    "Personal contact details share nahi karti yrr 😊 yahin baat karte hain",
-                    "Itni jaldi personal details kyun 😄 pehle thodi aur baat karo na",
-                    "Yahin comfortably baat karte hain yrr 😊"
+                    "haha acha ji 😄",
+                    "thank you yrr 😊",
+                    "tum bhi ache ho 😄"
                 )
             )
         }
 
-        val romantic = listOf(
-            "peyar",
-            "pyaar",
-            "pyar",
-            "love",
-            "dil",
-            "miss",
-            "marry",
-            "shaadi",
-            "jaan"
-        ).any { it in lower }
-
-        if (romantic) {
-            return pick(
-                listOf(
-                    "Haha tum bhi na 😄 pehle thoda aur jaan-pehchaan ho jaane do",
-                    "Achha ji, itni jaldi dil wali baatein? 😄",
-                    "Genuine connection mujhe zyada interesting lagta hai 😊"
-                )
+        // 8e) baki SAB cases - normal statement: 85% ack/self-share,
+        //     15% basic sawaal
+        return replyOrAsk(
+            listOf(
+                pick(ackBank),
+                pick(continueBank),
+                pick(selfShareBank),
+                pick(ackBank),
+                pick(ackBank)
             )
-        }
-
-        return when {
-
-            listOf(
-                "kaha se",
-                "kha se",
-                "where",
-                "city",
-                "kidhar"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Delhi wali vibe hai meri 😄 tum kis city se ho?",
-                        "Delhi se hoon 😊 tum kahan se ho?"
-                    )
-                )
-            }
-
-            listOf(
-                "khana",
-                "kha liya",
-                "lunch",
-                "dinner",
-                "breakfast",
-                "khaye"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Food ka topic hamesha acha hota hai 😄 tumne kya khaya?",
-                        "Tumhara favourite food kya hai? 😊"
-                    )
-                )
-            }
-
-            listOf(
-                "kya haal",
-                "haal chal"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Main mast hoon yrr 😊 tumhara mood kaisa hai aaj?",
-                        "Badhiya hoon 😊 waise aaj ka din kaisa ja raha hai?"
-                    )
-                )
-            }
-
-            listOf(
-                "gf",
-                "boyfriend",
-                "single",
-                "married",
-                "shaadi",
-                "relation"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Relationship mein understanding sabse important lagti hai 😊 tum kya maante ho?",
-                        "Hmm interesting topic hai 😄 tumhare liye relationship mein kya important hai?"
-                    )
-                )
-            }
-
-            listOf(
-                "hi",
-                "hello",
-                "hey",
-                "hii",
-                "heyy",
-                "hola"
-            ).any { lower.startsWith(it) } -> {
-                pick(
-                    listOf(
-                        "Hii 😄 tumhari vibe dekh ke ek sawaal poochu?",
-                        "Heyy 😊 waise tum actually kaise ho?",
-                        "Hello ji 😄 aaj mood kaisa hai?"
-                    )
-                )
-            }
-
-            listOf(
-                "thank",
-                "shukriya",
-                "dhanyavad"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Arey koi baat nahi yrr 😊 waise din kaisa raha?"
-                    )
-                )
-            }
-
-            listOf(
-                "bye",
-                "gtg",
-                "chalta",
-                "chalti",
-                "so jao",
-                "sote"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Theek hai yrr 😊 take care",
-                        "Okay ji 😄 apna khayal rakhna"
-                    )
-                )
-            }
-
-            listOf(
-                "haan",
-                "ha ",
-                "han ",
-                "ji",
-                "ok",
-                "okay",
-                "theek",
-                "acha",
-                "accha",
-                "hm",
-                "hmm"
-            ).any { lower.startsWith(it) } -> {
-                pick(
-                    listOf(
-                        "Bas haan? 😄 thoda detail mein batao na",
-                        "Achha ji 😄 aaj mood itna quiet kyun hai?",
-                        "Hmm... kuch soch rahe ho kya?"
-                    )
-                )
-            }
-
-            listOf(
-                "lol",
-                "haha",
-                "😂",
-                "🤣"
-            ).any { it in lower } -> {
-                pick(
-                    listOf(
-                        "Haha 😂 tum bhi na, waise tumhe hasna kis cheez pe sabse zyada aata hai?",
-                        "😂 Achha, sense of humour toh hai tummein"
-                    )
-                )
-            }
-
-            else -> {
-                pick(
-                    listOf(
-                        freshQuestion() + " 😊",
-                        "Sach me? 😄 " + freshQuestion(),
-                        "Hmm interesting yrr 😊 " + freshQuestion(),
-                        "Achha ji 😄 " + freshQuestion()
-                    )
-                )
-            }
-        }
+        )
     }
 }
 
+    
+    
