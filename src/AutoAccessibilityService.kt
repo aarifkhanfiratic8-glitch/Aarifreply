@@ -107,8 +107,6 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
-    // [NO-RESET] OFF/ON se analyzedKey/analyzedAt/handleAt kuch clear
-    // nahi hote — sirf queue ruk-ti chalti hai. Ye vars yahin bane rehte hain.
     fun stopQueue() {
         queueActive = false
         expectingChat = false
@@ -258,7 +256,8 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    private val heartbeatRunnable: Runnable = object : Runnable {
+    // === BLOCK 3 ISKE NICHE AAYEGA ===
+        private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
                 process()
@@ -358,7 +357,50 @@ class AutoAccessibilityService : AccessibilityService() {
         expectingChat = true
     }
 
-    // === BLOCK 3 ISKE NICHE AAYEGA ===
+    private fun clickRowTextArea(row: AccessibilityNodeInfo, name: String) {
+        val nameNode: AccessibilityNodeInfo? = findLeafWithText(row, name, 0)
+        var target: AccessibilityNodeInfo? = nameNode
+        var steps = 0
+        while (target != null && !target.isClickable && steps < 6) {
+            target = target.parent
+            steps++
+        }
+        if (target != null && target.isClickable) {
+            val ok: Boolean = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            dbg(if (ok) "Row clicked" else "Row click failed")
+            return
+        }
+        if (nameNode != null) {
+            val r = Rect()
+            nameNode.getBoundsInScreen(r)
+            dbg("Tapped: " + name)
+            tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
+            return
+        }
+        val r2 = Rect()
+        row.getBoundsInScreen(r2)
+        tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
+    }
+
+    private fun findLeafWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 12) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.trim() == text && node.childCount == 0) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
+    }
+
+    // === BLOCK 4 ISKE NICHE AAYEGA ===
         private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
@@ -458,33 +500,7 @@ class AutoAccessibilityService : AccessibilityService() {
         return findRowContainer(p, dw, depth + 1)
     }
 
-    private fun clickRowTextArea(row: AccessibilityNodeInfo, name: String) {
-        val nameNode: AccessibilityNodeInfo? = findLeafWithText(row, name, 0)
-        var target: AccessibilityNodeInfo? = nameNode
-        var steps = 0
-        while (target != null && !target.isClickable && steps < 6) {
-            target = target.parent
-            steps++
-        }
-        if (target != null && target.isClickable) {
-            val ok: Boolean = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            dbg(if (ok) "Row clicked" else "Row click failed")
-            return
-        }
-        if (nameNode != null) {
-            val r = Rect()
-            nameNode.getBoundsInScreen(r)
-            dbg("Tapped: " + name)
-            tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
-            return
-        }
-        val r2 = Rect()
-        row.getBoundsInScreen(r2)
-        tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
-    }
-
-    // [LOCK-5MIN] hamara msg last hai + pichle 5 min mein reply diya =
-    // next chat (repeat nahi). 5 min baad dubara reply allowed.
+    // [LOCK-5MIN] hamara msg last + pichle 5 min mein reply = next chat.
     // Unka naya msg hamesha jawab payega (ye check baad mein hai).
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
@@ -551,7 +567,8 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+    // === BLOCK 5 ISKE NICHE AAYEGA ===
+        private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
@@ -686,8 +703,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // === BLOCK 4 ISKE NICHE AAYEGA ===
-        private val recordHandler: Handler = Handler(Looper.getMainLooper())
+    private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
             val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
@@ -769,6 +785,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 sy = ((br.top + br.bottom) / 2).toFloat()
             }
         }
+        
         if (btn != null) {
             dbg("Click SEND (node)")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -932,3 +949,5 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
+
+    
