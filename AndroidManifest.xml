@@ -4,9 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    
+
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
         android:label="AutoReply AI"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
@@ -19,7 +20,6 @@
             </intent-filter>
         </activity>
 
-        
         <service
             android:name=".ReplyService"
             android:label="AutoReply AI"
@@ -38,10 +38,9 @@
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-                        <meta-data
+            <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
-            
         </service>
     </application>
 </manifest>
