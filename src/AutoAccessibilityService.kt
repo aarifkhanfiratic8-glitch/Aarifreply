@@ -40,7 +40,6 @@ class AutoAccessibilityService : AccessibilityService() {
     private var overlayView: View? = null
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
-    private var casualIdx: Int = 0
     private var wrongPkgCount: Int = 0
     private val handledAt: HashMap<String, Long> = HashMap()
 
@@ -50,11 +49,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
-    // [SV-CASUALS] short clean greetings
-    private val casuals: List<String> = listOf(
-        "hii 😊",
-        
-    )
+    // [SV-FLOW] Is file se KOI reply text nahi aata.
+    // Pehla message = ReplyGenerator.FIRST_MSG
+    // Baaki sab = ReplyGenerator (saved data -> templates)
+    // Ye file sirf screen control karti hai (open/read/send/next/back).
 
     override fun onServiceConnected() {
         instance = this
@@ -112,9 +110,8 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
-    // [SV-OFF-FIX] OFF = koi harkat NAHI. handler ki pending chains
-    // (send retry / recovery-back / next-unread) bhi turant cancel —
-    // isi se OFF pe back dabne ka bug fix hota hai.
+    // [SV-OFF-FIX] OFF = koi harkat NAHI + pending chains cancel
+    // (send retry / recovery-back / next-unread sab turant band)
     fun stopQueue() {
         queueActive = false
         expectingChat = false
@@ -129,7 +126,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-    // [SV-3D] 3D button helpers — gradient + round + shadow
+        // [SV-3D] 3D button helpers — gradient + round + shadow
     private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
@@ -364,6 +361,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
+    
     private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
@@ -488,6 +486,8 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
+    // [SV-FLOW] handleChat — is file se KOI text nahi. Sirf decision:
+    // unka msg -> ReplyGenerator | hamara msg -> next/back
     private fun handleChat(root: AccessibilityNodeInfo) {
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
@@ -505,22 +505,8 @@ class AutoAccessibilityService : AccessibilityService() {
             handleTheirMessage(msgs, key)
             return
         }
-        if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
-            dbg("Already replied - next/back")
-            goNextOrBack()
-            return
-        }
-        analyzedKey = key
-        analyzedAt = System.currentTimeMillis()
-        dbg("Our last/none - greeting")
-        sendCasualText()
-    }
-
-    private fun sendCasualText() {
-        val msg: String = casuals[casualIdx % casuals.size]
-        casualIdx++
-        ChatHistory.add(this, lastSender, "me", msg)
-        typeAndSend(msg)
+        dbg("Our last - next/back")
+        goNextOrBack()
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
@@ -535,8 +521,10 @@ class AutoAccessibilityService : AccessibilityService() {
             } catch (e: Exception) { null }
             analyzing = false
             if (reply.isNullOrBlank()) {
-                dbg("Reply failed - casual fallback")
-                handler.post { sendCasualText() }
+                // [SV-FLOW] fail hua = service se kuch nahi bhejna.
+                // Bas is chat ko chhod ke aage badho.
+                dbg("Reply failed - skip chat")
+                handler.post { goNextOrBack() }
                 return@thread
             }
             ChatHistory.add(this, sender, "them", newMsg)
@@ -639,9 +627,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // [SV-CHATNAME] chat ke header se bande ka naam padhta hai
-    // KYUN: OFF mode mein tum jo bhi chat kholo, data USI bande ke naam
-    //        se save ho - lastSender purana ho sakta hai, ye nahi.
+    // [SV-CHATNAME] chat header se bande ka naam — data usi ke naam se save
     private fun readChatName(root: AccessibilityNodeInfo): String {
         try {
             val dh: Int = resources.displayMetrics.heightPixels
@@ -683,10 +669,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-    // ==================================================================
-    // [SV-RECORD] DATA SAVE — ON ho ya OFF, sirf ye chalta rehta hai.
-    // Sirf Toki + sirf chat screen. Sender ka naam header se aata hai.
-    // ==================================================================
+        // [SV-RECORD] DATA SAVE — ON ho ya OFF, sirf ye. Toki + chat screen only.
     private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
@@ -964,7 +947,7 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // [SV-EVENTS] 1) DATA SAVE (ON/OFF dono) 2) automation sirf ON mein
+    // [SV-EVENTS] 1) DATA SAVE (ON/OFF) 2) automation sirf ON
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
         if (pkg != Prefs.queuePkg(this)) return
