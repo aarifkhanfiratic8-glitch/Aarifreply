@@ -760,6 +760,56 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
+    // Send button dhoondhta hai: input field ke same row mein, right side pe
+    private fun findSendNodeInRow(
+        root: AccessibilityNodeInfo,
+        fieldRect: Rect,
+        dw: Int
+    ): AccessibilityNodeInfo? {
+        val out = ArrayList<AccessibilityNodeInfo>()
+        collectSendCandidates(root, fieldRect, dw, out, 0)
+        for (c in out) {
+            if (c.isClickable) return c
+        }
+        return out.firstOrNull()
+    }
+
+    private fun collectSendCandidates(
+        node: AccessibilityNodeInfo,
+        fieldRect: Rect,
+        dw: Int,
+        out: MutableList<AccessibilityNodeInfo>,
+        depth: Int
+    ) {
+        if (depth > 14) return
+        val cd: String? = node.contentDescription?.toString()?.lowercase()
+        val txt: String? = node.text?.toString()?.lowercase()
+        val label: String? = cd ?: txt
+        if (label != null && label.contains("send")) {
+            out.add(node)
+        } else {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            if (!r.isEmpty) {
+                val cy = (r.top + r.bottom) / 2
+                val cx = (r.left + r.right) / 2
+                val fieldCy = (fieldRect.top + fieldRect.bottom) / 2
+                val sameRow = kotlin.math.abs(cy - fieldCy) <= fieldRect.height()
+                val rightSide = cx > fieldRect.right - dp(8)
+                val smallEnough = r.width() <= dw / 5
+                if (sameRow && rightSide && smallEnough && (node.isClickable || node.childCount == 0)) {
+                    out.add(node)
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectSendCandidates(c, fieldRect, dw, out, depth + 1)
+        }
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     private fun sendFlow() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
@@ -785,7 +835,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 sy = ((br.top + br.bottom) / 2).toFloat()
             }
         }
-        
+
         if (btn != null) {
             dbg("Click SEND (node)")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -875,24 +925,6 @@ class AutoAccessibilityService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
-    private fun findLeafWithText(
-        node: AccessibilityNodeInfo,
-        text: String,
-        depth: Int
-    ): AccessibilityNodeInfo? {
-        if (depth > 12) return null
-        val t: String? = node.text?.toString()
-        if (t != null && t.trim() == text && node.childCount == 0) return node
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) {
-                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
-                if (f != null) return f
-            }
-        }
-        return null
-    }
-
     private fun findNodeWithText(
         node: AccessibilityNodeInfo,
         text: String,
@@ -949,5 +981,3 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
-
-    
