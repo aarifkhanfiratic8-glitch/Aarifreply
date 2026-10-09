@@ -43,6 +43,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
     private var wrongPkgCount: Int = 0
+    private var profileBackCount: Int = 0
     private val handledAt: HashMap<String, Long> = HashMap()
 
     @Volatile private var sending: Boolean = false
@@ -113,11 +114,15 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
-        b.textSize = 13f
+        b.textSize = 11f
         b.setTextColor(0xFFFFFFFF.toInt())
         b.background = bg3d(color)
         b.elevation = 16f
-        b.setPadding(30, 14, 30, 14)
+        b.minWidth = 0
+        b.minimumWidth = 0
+        b.minHeight = 0
+        b.minimumHeight = 0
+        b.setPadding(22, 8, 22, 8)
         b.setOnClickListener { action() }
         return b
     }
@@ -128,11 +133,12 @@ class AutoAccessibilityService : AccessibilityService() {
             wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val box = LinearLayout(this)
             box.orientation = LinearLayout.VERTICAL
-            box.setPadding(10, 10, 10, 10)
+            box.setPadding(6, 6, 6, 6)
             box.elevation = 20f
 
             val dt = TextView(this)
-            dt.textSize = 10f
+            dt.textSize = 9f
+            dt.maxLines = 2
             dt.setTextColor(0xFFFFFFFF.toInt())
             dt.text = "AutoReply: ready (drag me)"
             dt.setPadding(18, 8, 18, 8)
@@ -325,6 +331,7 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         if (isInChat(root)) {
+            profileBackCount = 0
             if (expectingChat) {
                 expectingChat = false
                 openedAt = System.currentTimeMillis()
@@ -336,6 +343,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         expectingChat = false
         if (isProfile(root)) {
+            profileBackCount++
             val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
             if (chatBtn != null) {
                 dbg("Profile - opening chat")
@@ -345,6 +353,10 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             dbg("Profile page - back")
             performGlobalAction(GLOBAL_ACTION_BACK)
+            if (profileBackCount >= 2) {
+                profileBackCount = 0
+                handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 800)
+            }
             return
         }
         if (isOnList(root)) {
@@ -570,6 +582,14 @@ class AutoAccessibilityService : AccessibilityService() {
         if (low.contains("birthday") && low.contains("blessing")) return true
         if (low.contains("best wishes")) return true
         if (low.contains("replying to the other party")) return true
+        if (low.contains("disturbance")) return true
+        if (low.contains("only 10 messages")) return true
+        if (low.contains("mutual following")) return true
+        if (low.contains("voice & video")) return true
+        if (low.contains("unlocked")) return true
+        if (low.contains("view now")) return true
+        if (low.contains("reply earns")) return true
+        if (low.contains("diamond")) return true
         if (low.contains("double the reward")) return true
         if (t == "View" || t == "New" || t == "Online") return true
         if (low == "online" || low.startsWith("online |")) return true
@@ -812,7 +832,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 }
                 val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
                 val last: Pair<String, Boolean>? = msgs.lastOrNull()
-                if (last != null && !last.second) {
+                if (last != null && !last.second && !looksLikeMeta(last.first)) {
                     dbg("New msg during send - replying")
                     analyzing = true
                     analyzedKey = lastSender
