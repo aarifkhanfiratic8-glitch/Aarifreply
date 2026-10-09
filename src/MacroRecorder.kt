@@ -15,7 +15,7 @@ import org.json.JSONObject
 
 // [MACRO RECORDER]
 // REC ON karo -> tum Toki/WhatsApp pe jo bhi karo (click, type, wait) record hoga.
-// REC dubara dabao -> macro "m1" save ho jayega (app ke hisaab se alag).
+// REC dubara dabao -> macro "m1" save ho jayega (app ke ji hisaab se alag).
 // PLAY dabao -> app wahi steps khud repeat karega.
 //
 // IMPORTANT: Record karte waqt queue (ON/OFF) OFF rakho,
