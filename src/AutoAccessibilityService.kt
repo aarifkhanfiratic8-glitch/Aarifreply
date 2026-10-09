@@ -52,9 +52,6 @@ class AutoAccessibilityService : AccessibilityService() {
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
 
-    // [SV-FLOW] Reply sirf 2 jagah se aata hai: ReplyGenerator.saved data
-    // ya ReplyGenerator.templates. Is file mein koi reply text NAHI hai.
-
     override fun onServiceConnected() {
         instance = this
         val info: AccessibilityServiceInfo = AccessibilityServiceInfo()
@@ -95,8 +92,6 @@ class AutoAccessibilityService : AccessibilityService() {
         wrongPkgCount = 0
         sending = false
         analyzing = false
-        analyzedKey = ""
-        pendingReply = ""
         ourLastCount = 0
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -112,6 +107,8 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
+    // [NO-RESET] OFF/ON se analyzedKey/analyzedAt/handleAt kuch clear
+    // nahi hote — sirf queue ruk-ti chalti hai. Ye vars yahin bane rehte hain.
     fun stopQueue() {
         queueActive = false
         expectingChat = false
@@ -126,7 +123,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-    private fun lighten(color: Int): Int {
+        private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
         val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
@@ -355,7 +352,6 @@ class AutoAccessibilityService : AccessibilityService() {
         handledAt[pick.second] = System.currentTimeMillis()
         sending = false
         analyzing = false
-        analyzedKey = ""
         ourLastCount = 0
         dbg("Open: " + pick.second)
         clickRowTextArea(pick.first, pick.second)
@@ -363,7 +359,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
-    private fun findWorkRows(
+        private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
         val dw: Int = resources.displayMetrics.widthPixels
@@ -487,9 +483,9 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // RULE: unka msg dikhe -> saved data / template se uska jawab.
-    // Na dikhe -> 3 sec -> ReplyGenerator (templates) se greeting ->
-    // SENT -> next. Har chat ka reply pakka, koi skip nahi.
+    // [LOCK-5MIN] hamara msg last hai + pichle 5 min mein reply diya =
+    // next chat (repeat nahi). 5 min baad dubara reply allowed.
+    // Unka naya msg hamesha jawab payega (ye check baad mein hai).
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
             dbg("Chat loading...")
@@ -515,15 +511,13 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         if (analyzedKey == key &&
-            System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
-            dbg("Already replied - next/back")
+            System.currentTimeMillis() - analyzedAt < 5 * 60 * 1000L) {
+            dbg("Already replied (5min lock) - next/back")
             goNextOrBack()
             return
         }
         ourLastCount++
         if (ourLastCount >= 1) {
-            // 3 sec ho gaye, unka msg scrape nahi hua ->
-            // TEMPLATE se reply (ReplyGenerator hi se, service se nahi)
             ourLastCount = 0
             analyzing = true
             analyzedKey = key
@@ -532,7 +526,6 @@ class AutoAccessibilityService : AccessibilityService() {
             handleTheirMessage(listOf(Pair("hi", false)), key)
             return
         }
-        dbg("Waiting their msg")
         scheduleProcess(3000)
     }
 
@@ -694,7 +687,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-    private val recordHandler: Handler = Handler(Looper.getMainLooper())
+        private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
             val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
@@ -800,60 +793,29 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 900)
     }
 
-    private fun findSendNodeInRow(
-        root: AccessibilityNodeInfo,
-        fieldRect: Rect,
-        dw: Int
-    ): AccessibilityNodeInfo? {
-        val out = ArrayList<AccessibilityNodeInfo>()
-        collectRowClickables(root, fieldRect, dw, out, 0)
-        if (out.isEmpty()) return null
-        var best: AccessibilityNodeInfo? = null
-        var bestCx: Int = -1
-        for (n in out) {
-            val r = Rect()
-            n.getBoundsInScreen(r)
-            val cx: Int = (r.left + r.right) / 2
-            if (cx > bestCx) {
-                bestCx = cx
-                best = n
-            }
-        }
-        return best
-    }
-
-    private fun collectRowClickables(
-        node: AccessibilityNodeInfo,
-        fieldRect: Rect,
-        dw: Int,
-        out: ArrayList<AccessibilityNodeInfo>,
-        depth: Int
-    ) {
-        if (depth > 14) return
-        if (node.isClickable && node.isEnabled) {
-            val r = Rect()
-            node.getBoundsInScreen(r)
-            if (!r.isEmpty) {
-                val cx: Int = (r.left + r.right) / 2
-                val cy: Int = (r.top + r.bottom) / 2
-                val inRow: Boolean =
-                    cy >= fieldRect.top - 40 && cy <= fieldRect.bottom + 40
-                val rightEnd: Boolean = cx > dw * 0.78
-                val smallEnough: Boolean = r.width() <= fieldRect.width() / 2
-                if (inRow && rightEnd && smallEnough) {
-                    out.add(node)
-                }
-            }
-        }
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) collectRowClickables(c, fieldRect, dw, out, depth + 1)
-        }
-    }
-
     private fun onSent() {
         sending = false
         handler.postDelayed({
+            try {
+                val root: AccessibilityNodeInfo = rootInActiveWindow ?: run {
+                    goNextOrBack()
+                    return@postDelayed
+                }
+                if (!isInChat(root)) {
+                    goNextOrBack()
+                    return@postDelayed
+                }
+                val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
+                val last: Pair<String, Boolean>? = msgs.lastOrNull()
+                if (last != null && !last.second) {
+                    dbg("New msg during send - replying")
+                    analyzing = true
+                    analyzedKey = lastSender
+                    analyzedAt = System.currentTimeMillis()
+                    handleTheirMessage(msgs, lastSender)
+                    return@postDelayed
+                }
+            } catch (e: Exception) { }
             goNextOrBack()
         }, 600)
     }
@@ -887,7 +849,6 @@ class AutoAccessibilityService : AccessibilityService() {
                     expectingChat = true
                     sending = false
                     analyzing = false
-                    analyzedKey = ""
                     ourLastCount = 0
                     return
                 }
