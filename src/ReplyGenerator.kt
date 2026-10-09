@@ -8,26 +8,15 @@ import kotlin.random.Random
 
 object ReplyGenerator {
 
-    // [S1] FIRST_MSG — har sender ko sirf ek baar (pehla message)
+    // [S1] FIRST_MSG — sirf EK BAAR per sender (intro_done flag). Kabhi repeat nahi.
     private const val FIRST_MSG =
         "aur batao, kaise ho?"
 
-    // [S1b] NUDGE BANK — LAST RESORT. Kuch samajh na aaye ya sab fail ho
-    //        jaye to YE bhejo. Kabhi khaali haath / skip nahi.
-    private val nudgeBank: List<String> = listOf(
-        "hmm",
-        "aap busy ho kahi per?",
-        "bolye na",
-        "ha suno",
-        "kya hua ji",
-        "batao na kuch"
-    )
-
-    // [S2] basicQuestions — bot ke khud-ke sawaal, sirf 5% cases mein
+    // [S2] basicQuestions — templates ka hissa (5% cases)
     private val basicQuestions: List<String> = listOf(
         "aap kyu aye iss app per?",
+        "kaha se ho aap?",
         "kya kaam karte ho aap?",
-        "kahan se ho aap?",
         "aap kis tarah ki ladki pasand karte ho?"
     )
 
@@ -82,10 +71,11 @@ object ReplyGenerator {
         "kolkata" to "kolkata? mishti doi wali city 😄"
     )
 
-    // [S4] BigHistory — per-sender chat history (500/sender)
+    // [S4] BigHistory — history + FIRST_MSG ek-baari flag (intro_done)
     private object BigHistory {
         private const val PREFS = "big_history"
         private const val CAP = 500
+
         fun add(context: Context, sender: String, who: String, text: String) {
             try {
                 val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -98,6 +88,7 @@ object ReplyGenerator {
                 sp.edit().putString(key, keep.joinToString("\n")).apply()
             } catch (e: Exception) { }
         }
+
         fun get(context: Context, sender: String): List<Pair<String, String>> {
             try {
                 val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -109,11 +100,27 @@ object ReplyGenerator {
                 }
             } catch (e: Exception) { return emptyList() }
         }
+
         fun myMessages(context: Context, sender: String): List<String> =
             get(context, sender).filter { it.first == "me" }.map { it.second }
+
+        // FIRST_MSG kabhi repeat na ho — ye flag hamesha yaad rehta hai
+        fun introDone(context: Context, sender: String): Boolean {
+            try {
+                val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                return sp.getBoolean("intro_" + sender.lowercase(), false)
+            } catch (e: Exception) { return false }
+        }
+
+        fun markIntro(context: Context, sender: String) {
+            try {
+                val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                sp.edit().putBoolean("intro_" + sender.lowercase(), true).apply()
+            } catch (e: Exception) { }
+        }
     }
 
-    // [S5] ManualMemory — HAR SENDER KA DATA ALAG (learning system)
+    // [S5] ManualMemory — saved data (95% replies yahan se)
     private object ManualMemory {
         private const val PREFS = "manual_memory"
         private const val CAP = 3000
@@ -150,6 +157,8 @@ object ReplyGenerator {
             } catch (e: Exception) { }
         }
 
+        // 3-level match — 50% word overlap tak memory pakdi jayegi
+        // (zyada saved matches = 95% memory se hi reply)
         fun findReply(context: Context, sender: String, incoming: String): String? {
             val pairs = load(context, sender)
             if (pairs.isEmpty()) return null
@@ -159,7 +168,7 @@ object ReplyGenerator {
             }
             for (p in pairs) {
                 val q = norm(p.first)
-                if (q.length >= 6 && (inc.contains(q) || q.contains(inc))) return p.second
+                if (q.length >= 5 && (inc.contains(q) || q.contains(inc))) return p.second
             }
             val iw = inc.split(" ").filter { it.length > 2 }.toSet()
             if (iw.size >= 2) {
@@ -170,7 +179,7 @@ object ReplyGenerator {
                     if (qw.isEmpty()) continue
                     val inter = iw.intersect(qw).size
                     val score = inter * 100 / maxOf(iw.size, qw.size)
-                    if (score >= 60 && score > bestScore) {
+                    if (score >= 50 && score > bestScore) {
                         best = p
                         bestScore = score
                     }
@@ -181,8 +190,8 @@ object ReplyGenerator {
         }
     }
 
-    // [S6] generate() — ENTRY POINT. Kabhi null nahi lautata
-    // (non-blank message pe) — last mein nudgeBank pakka bhejta hai.
+    // [S6] generate() — ORDER: pehli baar -> FIRST_MSG (sirf ek baar) ->
+    //        1) SAVED DATA (95%) 2) API (agar key ho) 3) TEMPLATE (5%)
     fun generate(
         context: Context,
         sender: String,
@@ -193,13 +202,13 @@ object ReplyGenerator {
 
         BigHistory.add(context, sender, "them", newMessage)
 
-        val myMsgs = BigHistory.myMessages(context, sender)
-        if (myMsgs.isEmpty()) {
+        if (!BigHistory.introDone(context, sender)) {
+            BigHistory.markIntro(context, sender)
             BigHistory.add(context, sender, "me", FIRST_MSG)
             return FIRST_MSG
         }
 
-        // 1) saved data (usi sender ka)
+        // 95% — saved data se
         try {
             val learned = ManualMemory.findReply(context, sender, newMessage)
             if (learned != null) {
@@ -208,7 +217,7 @@ object ReplyGenerator {
             }
         } catch (e: Exception) { }
 
-        // 2) API (agar key lagi ho)
+        // API (backup, sirf key hone par)
         val apiKey = Prefs.apiKey(context)
         var final: String = ""
         if (apiKey.isNotBlank()) {
@@ -217,23 +226,22 @@ object ReplyGenerator {
             } catch (e: Exception) { "" }
         }
 
-        // 3) templates
+        // 5% — templates
         if (final.isBlank()) {
             final = try {
                 localReply(context, sender, newMessage) ?: ""
             } catch (e: Exception) { "" }
         }
 
-        // 4) LAST RESORT — kabhi khaali nahi
         if (final.isBlank()) {
-            final = pick(nudgeBank)
+            final = pick(thinkBank + ackBank)
         }
 
         BigHistory.add(context, sender, "me", final)
         return final
     }
 
-    // [S8] recordChat() — sirf TUMHARE manual jawab save hote hain
+    // [S8] recordChat — OFF/ON dono mein sirf tumhare manual jawab save
     fun recordChat(
         context: Context,
         sender: String,
@@ -258,7 +266,7 @@ object ReplyGenerator {
     }
 
     // === PART 2 ISKE NICHE AAYEGA ===
-    // [S9] askOpenAI — API backup
+        // [S9] askOpenAI — API backup
     private fun askOpenAI(
         context: Context,
         apiKey: String,
@@ -322,7 +330,7 @@ object ReplyGenerator {
         return list[Random.nextInt(list.size)]
     }
 
-    // [S10] localReply() — template engine
+    // [S10] localReply() — TEMPLATE (sirf 5% cases, jab saved data mein match na ho)
     private fun localReply(
         context: Context,
         sender: String,
@@ -437,7 +445,7 @@ object ReplyGenerator {
             return replyOrAsk(listOf("haan ji kyun nahi 😊", "zaroor ji 😄"))
         }
 
-        // L3 — humara basic sawaal tha, ye unka jawab hai -> ack
+        // L3 — humara sawaal tha, ye unka jawab hai -> ack
         if (askedRecently() && lower.length <= 20) {
             for ((city, ack) in cityAcks) {
                 if (city in lower) return ack
@@ -455,7 +463,7 @@ object ReplyGenerator {
             return replyOrAsk(listOf("theek hai ji 😊", "acha ji 😊", "hmm 😊", "ji ji 😄"))
         }
 
-        // L5 — wo kuch aur pooche -> "soch rahi hu" style
+        // L5 — wo kuch aur pooche
         val theyAsked = lower.contains("?") ||
             listOf(
                 "kya", "kaise", "kese", "kahan", "kha ", "kidhar", "kyu",
