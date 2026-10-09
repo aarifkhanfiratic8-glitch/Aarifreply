@@ -50,11 +50,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
-    // [SV-CASUALS] short clean greetings — OFF/ON dono mein kabhi kabhi use
+    // [SV-CASUALS] short clean greetings
     private val casuals: List<String> = listOf(
-        "thik hai😊",
-        "kya 😄",
-        "bolo na ji😊",
+        "hii 😊",
+        
     )
 
     override fun onServiceConnected() {
@@ -113,14 +112,16 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
-    // [SV-OFF-BEHAVIOR] OFF = koi harkat NAHI. Sirf data save (record)
-    // chalta rehta hai — wo alag handler se hai, ye function usse nahi rokta.
+    // [SV-OFF-FIX] OFF = koi harkat NAHI. handler ki pending chains
+    // (send retry / recovery-back / next-unread) bhi turant cancel —
+    // isi se OFF pe back dabne ka bug fix hota hai.
     fun stopQueue() {
         queueActive = false
         expectingChat = false
         sending = false
         analyzing = false
         qHandler.removeCallbacksAndMessages(null)
+        handler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
         updatePauseBtn()
@@ -128,7 +129,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-        // [SV-3D] 3D button banane ke helpers — gradient + round corners + shadow
+    // [SV-3D] 3D button helpers — gradient + round + shadow
     private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
@@ -167,7 +168,6 @@ class AutoAccessibilityService : AccessibilityService() {
             box.setPadding(10, 10, 10, 10)
             box.elevation = 20f
 
-            // debug text — rounded dark pill
             val dt = TextView(this)
             dt.textSize = 10f
             dt.setTextColor(0xFFFFFFFF.toInt())
@@ -235,7 +235,6 @@ class AutoAccessibilityService : AccessibilityService() {
         pauseBtn = null
     }
 
-    // [SV-3D] ON/OFF pe button ka color+text badalta hai
     private fun updatePauseBtn() {
         val b = pauseBtn ?: return
         if (queueActive) {
@@ -365,7 +364,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
-        private fun findWorkRows(
+    private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
         val dw: Int = resources.displayMetrics.widthPixels
@@ -502,8 +501,8 @@ class AutoAccessibilityService : AccessibilityService() {
             analyzing = true
             analyzedKey = key
             analyzedAt = System.currentTimeMillis()
-            dbg("Their msg - reply")
-            handleTheirMessage(msgs, lastSender)
+            dbg("Their msg - analyzing")
+            handleTheirMessage(msgs, key)
             return
         }
         if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
@@ -640,20 +639,65 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
+    // [SV-CHATNAME] chat ke header se bande ka naam padhta hai
+    // KYUN: OFF mode mein tum jo bhi chat kholo, data USI bande ke naam
+    //        se save ho - lastSender purana ho sakta hai, ye nahi.
+    private fun readChatName(root: AccessibilityNodeInfo): String {
+        try {
+            val dh: Int = resources.displayMetrics.heightPixels
+            val texts = ArrayList<String>()
+            collectHeaderTexts(root, texts, dh, 0)
+            for (x in texts) {
+                if (x.length in 2..30 &&
+                    !x.contains(":") &&
+                    !x.startsWith("[") &&
+                    !looksLikeMeta(x)
+                ) {
+                    return x
+                }
+            }
+        } catch (e: Exception) { }
+        return lastSender
+    }
+
+    private fun collectHeaderTexts(
+        node: AccessibilityNodeInfo,
+        out: ArrayList<String>,
+        dh: Int,
+        depth: Int
+    ) {
+        if (depth > 10) return
+        val t: String? = node.text?.toString()?.trim()
+        if (t != null && t.isNotEmpty() && node.childCount == 0) {
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            val cy: Int = (r.top + r.bottom) / 2
+            if (cy > dh * 0.04 && cy < dh * 0.16) {
+                out.add(t)
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) collectHeaderTexts(c, out, dh, depth + 1)
+        }
+    }
+
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        // ==================================================================
-    // [SV-RECORD] DATA SAVE — autopilot ON ho ya OFF, ye HAMESHA chalta hai
-    // Screen se chat padh kar ReplyGenerator.recordChat() ko deta hai.
-    // OFF mein ye HI kaam karta hai — koi click/back/next NAHI.
+    // ==================================================================
+    // [SV-RECORD] DATA SAVE — ON ho ya OFF, sirf ye chalta rehta hai.
+    // Sirf Toki + sirf chat screen. Sender ka naam header se aata hai.
     // ==================================================================
     private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
             val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
+            val pkg: String? = root.packageName?.toString()
+            if (pkg != Prefs.queuePkg(this)) return@Runnable
             if (!isInChat(root)) return@Runnable
             val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
             if (msgs.size >= 2) {
-                ReplyGenerator.recordChat(this, lastSender, msgs)
+                val name: String = readChatName(root)
+                ReplyGenerator.recordChat(this, name, msgs)
             }
         } catch (e: Exception) { }
     }
@@ -920,19 +964,13 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // ==================================================================
-    // [SV-EVENTS] Har screen change pe:
-    //   1) DATA SAVE (record) — ON/OFF dono mein, koi harkat nahi
-    //   2) agar ON hai to automation (process)
-    // ==================================================================
+    // [SV-EVENTS] 1) DATA SAVE (ON/OFF dono) 2) automation sirf ON mein
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
         if (pkg != Prefs.queuePkg(this)) return
 
-        // 1) DATA SAVE — OFF mein bhi (ye "sirf save" wala kaam hai)
         scheduleRecord()
 
-        // 2) Automation — sirf ON mein
         if (!queueActive) return
         if (sending || analyzing) return
         scheduleProcess(600)
@@ -940,4 +978,3 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
-
