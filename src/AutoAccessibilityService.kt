@@ -52,6 +52,9 @@ class AutoAccessibilityService : AccessibilityService() {
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
 
+    // [SV-FLOW] Reply sirf 2 jagah se aata hai: ReplyGenerator.saved data
+    // ya ReplyGenerator.templates. Is file mein koi reply text NAHI hai.
+
     override fun onServiceConnected() {
         instance = this
         val info: AccessibilityServiceInfo = AccessibilityServiceInfo()
@@ -123,7 +126,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-        private fun lighten(color: Int): Int {
+    private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
         val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
@@ -360,7 +363,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
-        private fun findWorkRows(
+    private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
         val dw: Int = resources.displayMetrics.widthPixels
@@ -484,10 +487,11 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // [SV-NOSKIP] chat khuli + reply baaki = kabhi skip nahi.
-    // Next unread / back sirf reply SENT hone ke baad.
+    // RULE: unka msg dikhe -> saved data / template se uska jawab.
+    // Na dikhe -> 3 sec -> ReplyGenerator (templates) se greeting ->
+    // SENT -> next. Har chat ka reply pakka, koi skip nahi.
     private fun handleChat(root: AccessibilityNodeInfo) {
-        if (System.currentTimeMillis() - openedAt < 2500) {
+        if (System.currentTimeMillis() - openedAt < 2000) {
             dbg("Chat loading...")
             scheduleProcess(1200)
             return
@@ -517,7 +521,18 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         ourLastCount++
-        dbg("Our last - waiting their msg (" + ourLastCount + ")")
+        if (ourLastCount >= 1) {
+            // 3 sec ho gaye, unka msg scrape nahi hua ->
+            // TEMPLATE se reply (ReplyGenerator hi se, service se nahi)
+            ourLastCount = 0
+            analyzing = true
+            analyzedKey = key
+            analyzedAt = System.currentTimeMillis()
+            dbg("Template reply")
+            handleTheirMessage(listOf(Pair("hi", false)), key)
+            return
+        }
+        dbg("Waiting their msg")
         scheduleProcess(3000)
     }
 
@@ -590,6 +605,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (t.length <= 1) return true
         if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
         if (t.matches(Regex("^\\d{4}/.*"))) return true
+        if (t.matches(Regex("^\\d+/\\d+$"))) return true
         val low: String = t.lowercase()
         if (low == "say something") return true
         if (t.endsWith("…") || t.endsWith("...")) return true
@@ -678,7 +694,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        private val recordHandler: Handler = Handler(Looper.getMainLooper())
+    private val recordHandler: Handler = Handler(Looper.getMainLooper())
     private val recordRunnable: Runnable = Runnable {
         try {
             val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
@@ -708,7 +724,6 @@ class AutoAccessibilityService : AccessibilityService() {
         doSetText()
     }
 
-    // [SV-NOSKIP] KOI LIMIT NAHI — jab tak text set na ho, koshish jaari.
     private fun doSetText() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
@@ -736,8 +751,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
-    // [SV-NOSKIP] KOI LIMIT NAHI — jab tak SEND na ho, koshish jaari.
-    // Back/next unread sirf SENT ke baad.
     private fun sendFlow() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
@@ -842,7 +855,7 @@ class AutoAccessibilityService : AccessibilityService() {
         sending = false
         handler.postDelayed({
             goNextOrBack()
-        }, 900)
+        }, 600)
     }
 
     private fun goNextOrBack() {
@@ -958,5 +971,3 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 }
-
-    
