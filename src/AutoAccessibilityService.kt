@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -49,8 +50,8 @@ class AutoAccessibilityService : AccessibilityService() {
     private var analyzedAt: Long = 0L
     private var pendingReply: String = ""
 
+    // [SV-CASUALS] short clean greetings — OFF/ON dono mein kabhi kabhi use
     private val casuals: List<String> = listOf(
-           
         "hii 😊",
         "hello 😄",
         "heyy 😊",
@@ -61,7 +62,7 @@ class AutoAccessibilityService : AccessibilityService() {
         "hii, batao kya chal raha 😊",
         "hey 😄",
         "hii ji 😊"
-        )
+    )
 
     override fun onServiceConnected() {
         instance = this
@@ -119,6 +120,8 @@ class AutoAccessibilityService : AccessibilityService() {
         qHandler.postDelayed(heartbeatRunnable, 12000)
     }
 
+    // [SV-OFF-BEHAVIOR] OFF = koi harkat NAHI. Sirf data save (record)
+    // chalta rehta hai — wo alag handler se hai, ye function usse nahi rokta.
     fun stopQueue() {
         queueActive = false
         expectingChat = false
@@ -128,16 +131,36 @@ class AutoAccessibilityService : AccessibilityService() {
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
         updatePauseBtn()
-        dbg("Queue OFF")
+        dbg("Queue OFF — sirf data save")
     }
 
     // === BLOCK 2 ISKE NICHE AAYEGA ===
-        private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+        // [SV-3D] 3D button banane ke helpers — gradient + round corners + shadow
+    private fun lighten(color: Int): Int {
+        val a = android.graphics.Color.alpha(color)
+        val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
+        val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
+        val b = (android.graphics.Color.blue(color) * 0.65 + 255 * 0.35).toInt()
+        return android.graphics.Color.argb(a, r, g, b)
+    }
+
+    private fun bg3d(color: Int): GradientDrawable {
+        val d = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(lighten(color), color)
+        )
+        d.cornerRadius = 45f
+        return d
+    }
+
+    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
         val b = Button(this)
         b.text = text
-        b.textSize = 11f
+        b.textSize = 13f
         b.setTextColor(0xFFFFFFFF.toInt())
-        b.setBackgroundColor(color)
+        b.background = bg3d(color)
+        b.elevation = 16f
+        b.setPadding(30, 14, 30, 14)
         b.setOnClickListener { action() }
         return b
     }
@@ -148,18 +171,26 @@ class AutoAccessibilityService : AccessibilityService() {
             wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val box = LinearLayout(this)
             box.orientation = LinearLayout.VERTICAL
-            box.setPadding(6, 6, 6, 6)
+            box.setPadding(10, 10, 10, 10)
+            box.elevation = 20f
+
+            // debug text — rounded dark pill
             val dt = TextView(this)
             dt.textSize = 10f
-            dt.setTextColor(0xFF00FF00.toInt())
+            dt.setTextColor(0xFFFFFFFF.toInt())
             dt.text = "AutoReply: ready (drag me)"
+            dt.setPadding(18, 8, 18, 8)
+            dt.background = bg3d(0xFF37474F.toInt())
+            dt.elevation = 12f
             debugText = dt
             box.addView(dt)
+
             val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt()) {
                 if (queueActive) stopQueue() else startQueue()
             }
             pauseBtn = pb
             box.addView(pb)
+
             dt.setOnTouchListener(object : View.OnTouchListener {
                 private var downX: Float = 0f
                 private var downY: Float = 0f
@@ -211,13 +242,15 @@ class AutoAccessibilityService : AccessibilityService() {
         pauseBtn = null
     }
 
+    // [SV-3D] ON/OFF pe button ka color+text badalta hai
     private fun updatePauseBtn() {
+        val b = pauseBtn ?: return
         if (queueActive) {
-            pauseBtn?.text = "ON"
-            pauseBtn?.setBackgroundColor(0xFF2E7D32.toInt())
+            b.text = "ON"
+            b.background = bg3d(0xFF2E7D32.toInt())
         } else {
-            pauseBtn?.text = "OFF"
-            pauseBtn?.setBackgroundColor(0xFFC62828.toInt())
+            b.text = "OFF"
+            b.background = bg3d(0xFFC62828.toInt())
         }
     }
 
@@ -240,7 +273,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    // === HEARTBEAT: sirf backup - koi event miss ho to self-check ===
     private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
@@ -281,7 +313,6 @@ class AutoAccessibilityService : AccessibilityService() {
         if (currentPkg != pkg) {
             return
         }
-
         val leaveDialog: AccessibilityNodeInfo? =
             findNodeWithText(root, "are you sure to leave", 0)
         if (leaveDialog != null) {
@@ -292,7 +323,6 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             return
         }
-
         if (isInChat(root)) {
             if (expectingChat) {
                 expectingChat = false
@@ -302,7 +332,6 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         expectingChat = false
-
         if (isProfile(root)) {
             val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
             if (chatBtn != null) {
@@ -315,12 +344,10 @@ class AutoAccessibilityService : AccessibilityService() {
             performGlobalAction(GLOBAL_ACTION_BACK)
             return
         }
-
         if (isOnList(root)) {
             handleList(root)
             return
         }
-
         dbg("Other screen - back")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
@@ -344,7 +371,8 @@ class AutoAccessibilityService : AccessibilityService() {
         expectingChat = true
     }
 
-    private fun findWorkRows(
+    // === BLOCK 3 ISKE NICHE AAYEGA ===
+        private fun findWorkRows(
         root: AccessibilityNodeInfo
     ): List<Pair<AccessibilityNodeInfo, String>> {
         val dw: Int = resources.displayMetrics.widthPixels
@@ -468,9 +496,6 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // === BLOCK 3 ISKE NICHE AAYEGA ===
-    
-        // === Conversation rule: unka msg = HAMESHA jawab | hamara/empty = ek greeting phir aage ===
     private fun handleChat(root: AccessibilityNodeInfo) {
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
@@ -479,17 +504,15 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
-
         if (last != null && !last.second) {
             if (analyzing) return
             analyzing = true
             analyzedKey = key
             analyzedAt = System.currentTimeMillis()
-            dbg("Their msg - AI reply")
+            dbg("Their msg - reply")
             handleTheirMessage(msgs, lastSender)
             return
         }
-
         if (analyzedKey == key && System.currentTimeMillis() - analyzedAt < 30 * 60 * 1000L) {
             dbg("Already replied - next/back")
             goNextOrBack()
@@ -497,7 +520,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         analyzedKey = key
         analyzedAt = System.currentTimeMillis()
-        dbg("Our last/none - greeting bhejo")
+        dbg("Our last/none - greeting")
         sendCasualText()
     }
 
@@ -520,7 +543,7 @@ class AutoAccessibilityService : AccessibilityService() {
             } catch (e: Exception) { null }
             analyzing = false
             if (reply.isNullOrBlank()) {
-                dbg("AI failed - greeting fallback")
+                dbg("Reply failed - casual fallback")
                 handler.post { sendCasualText() }
                 return@thread
             }
@@ -538,7 +561,6 @@ class AutoAccessibilityService : AccessibilityService() {
         return out.takeLast(12)
     }
 
-    // === FIX: text nodes jinke andar SPANS hain unhe bhi pakdo - messages miss nahi honge ===
     private fun hasTextChild(node: AccessibilityNodeInfo): Boolean {
         for (i in 0 until node.childCount) {
             val c: AccessibilityNodeInfo? = node.getChild(i)
@@ -626,7 +648,29 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // === BLOCK 4 ISKE NICHE AAYEGA ===
-        private fun typeAndSend(reply: String) {
+        // ==================================================================
+    // [SV-RECORD] DATA SAVE — autopilot ON ho ya OFF, ye HAMESHA chalta hai
+    // Screen se chat padh kar ReplyGenerator.recordChat() ko deta hai.
+    // OFF mein ye HI kaam karta hai — koi click/back/next NAHI.
+    // ==================================================================
+    private val recordHandler: Handler = Handler(Looper.getMainLooper())
+    private val recordRunnable: Runnable = Runnable {
+        try {
+            val root: AccessibilityNodeInfo = rootInActiveWindow ?: return@Runnable
+            if (!isInChat(root)) return@Runnable
+            val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
+            if (msgs.size >= 2) {
+                ReplyGenerator.recordChat(this, lastSender, msgs)
+            }
+        } catch (e: Exception) { }
+    }
+
+    private fun scheduleRecord() {
+        recordHandler.removeCallbacks(recordRunnable)
+        recordHandler.postDelayed(recordRunnable, 1500)
+    }
+
+    private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
             return
@@ -636,7 +680,6 @@ class AutoAccessibilityService : AccessibilityService() {
         doSetText(0)
     }
 
-    // SET_TEXT se direct text - clipboard/popup nahi, keyboard nahi
     private fun doSetText(tryCount: Int) {
         if (tryCount > 4) {
             dbg("Text failed - recovery back")
@@ -671,7 +714,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
-    // Send: pehle button NODE par direct CLICK, phir alternate tap
     private fun sendFlow(attempt: Int) {
         if (attempt > 10) {
             dbg("Send not working - recovery back")
@@ -705,10 +747,10 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }
         if (attempt % 2 == 0 && btn != null) {
-            dbg("Click SEND " + attempt + " (node) at " + sx.toInt() + "," + sy.toInt())
+            dbg("Click SEND " + attempt + " (node)")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         } else {
-            dbg("Tap SEND " + attempt + " at " + sx.toInt() + "," + sy.toInt())
+            dbg("Tap SEND " + attempt)
             tap(sx, sy)
         }
         handler.postDelayed({
@@ -786,7 +828,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 900)
     }
 
-    // Next unread: clickable parent par CLICK, na chale to center par tap
     private fun goNextOrBack() {
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         if (root != null) {
@@ -886,15 +927,24 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
+    // ==================================================================
+    // [SV-EVENTS] Har screen change pe:
+    //   1) DATA SAVE (record) — ON/OFF dono mein, koi harkat nahi
+    //   2) agar ON hai to automation (process)
+    // ==================================================================
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg: String = event.packageName?.toString() ?: return
-        if (queueActive && pkg == Prefs.queuePkg(this)) {
-            if (sending || analyzing) return
-            scheduleProcess(600)
-        }
+        if (pkg != Prefs.queuePkg(this)) return
+
+        // 1) DATA SAVE — OFF mein bhi (ye "sirf save" wala kaam hai)
+        scheduleRecord()
+
+        // 2) Automation — sirf ON mein
+        if (!queueActive) return
+        if (sending || analyzing) return
+        scheduleProcess(600)
     }
 
     override fun onInterrupt() { }
 }
 
-    
