@@ -26,8 +26,10 @@ import kotlin.concurrent.thread
 
 class AutoAccessibilityService : AccessibilityService() {
 
+    // ============ BLOCK 1: LIFECYCLE + VARS ============
     companion object {
         var instance: AutoAccessibilityService? = null
+        var recorder: MacroRecorder? = null
         @Volatile var queueActive: Boolean = false
         private val handler: Handler = Handler(Looper.getMainLooper())
         private val qHandler: Handler = Handler(Looper.getMainLooper())
@@ -54,6 +56,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        recorder = MacroRecorder(this)
         val info: AccessibilityServiceInfo = AccessibilityServiceInfo()
         info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -61,12 +64,15 @@ class AutoAccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
         info.notificationTimeout = 100
         setServiceInfo(info)
+        ObserverLog.log(this, "SERVICE CONNECTED")
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         stopQueue()
         hideOverlay()
+        recorder = null
         instance = null
+        ObserverLog.log(this, "SERVICE DISCONNECTED")
         return super.onUnbind(intent)
     }
 
@@ -86,42 +92,8 @@ class AutoAccessibilityService : AccessibilityService() {
         return System.currentTimeMillis() - t < 180000L
     }
 
-    fun startQueue() {
-        queueActive = true
-        expectingChat = false
-        wrongPkgCount = 0
-        sending = false
-        analyzing = false
-        ourLastCount = 0
-        qHandler.removeCallbacksAndMessages(null)
-        val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        try { wakeLock?.release() } catch (_: Exception) { }
-        val wl: PowerManager.WakeLock =
-            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "autoreply:queue")
-        wl.acquire(60 * 60 * 1000L)
-        wakeLock = wl
-        showOverlay()
-        updatePauseBtn()
-        dbg("Queue ON")
-        scheduleProcess(500)
-        qHandler.postDelayed(heartbeatRunnable, 12000)
-    }
-
-    fun stopQueue() {
-        queueActive = false
-        expectingChat = false
-        sending = false
-        analyzing = false
-        qHandler.removeCallbacksAndMessages(null)
-        handler.removeCallbacksAndMessages(null)
-        try { wakeLock?.release() } catch (_: Exception) { }
-        wakeLock = null
-        updatePauseBtn()
-        dbg("Queue OFF — sirf data save")
-    }
-
-    // === BLOCK 2 ISKE NICHE AAYEGA ===
-        private fun lighten(color: Int): Int {
+    // ============ BLOCK 2: OVERLAY UI (OFF/REC/PLAY + LOGS long-press) ============
+    private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
         val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
@@ -169,11 +141,30 @@ class AutoAccessibilityService : AccessibilityService() {
             debugText = dt
             box.addView(dt)
 
+            // LOGS: debug text ko LONG-PRESS karo -> observer log clipboard me copy
+            dt.setOnLongClickListener {
+                val txt: String = ObserverLog.dump(this)
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("logs", txt))
+                dbg("Log copied - kahin bhi paste karke padho")
+                true
+            }
+
             val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt()) {
                 if (queueActive) stopQueue() else startQueue()
             }
             pauseBtn = pb
             box.addView(pb)
+
+            val recB: Button = makeOverlayButton("REC", 0xFF6A1B9A.toInt()) {
+                toggleRec()
+            }
+            box.addView(recB)
+
+            val playB: Button = makeOverlayButton("PLAY", 0xFF2E7D32.toInt()) {
+                togglePlay()
+            }
+            box.addView(playB)
 
             dt.setOnTouchListener(object : View.OnTouchListener {
                 private var downX: Float = 0f
@@ -237,6 +228,32 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
+    // REC/PLAY toggles - macro recorder control
+    private fun toggleRec() {
+        val r = recorder ?: return
+        val pkg: String = Prefs.queuePkg(this)
+        if (r.isRecording) {
+            val n: Int = r.stopRecording("m1")
+            dbg("Macro saved: m1 (" + n + " steps)")
+        } else {
+            r.startRecording(pkg)
+            dbg("REC ON - jo bhi karo record hoga. Dubara dabao = save")
+        }
+    }
+
+    private fun togglePlay() {
+        val r = recorder ?: return
+        if (r.isPlaying) {
+            r.stopPlay()
+            dbg("Play stop")
+            return
+        }
+        val pkg: String = Prefs.queuePkg(this)
+        r.play(pkg, "m1") { ok ->
+            dbg(if (ok) "Macro DONE" else "Macro m1 nahi mila - pehle REC se banao")
+        }
+    }
+
     private fun isInChat(root: AccessibilityNodeInfo): Boolean {
         val field: AccessibilityNodeInfo = findInput(root) ?: return false
         val r = Rect()
@@ -256,8 +273,8 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    // === BLOCK 3 ISKE NICHE AAYEGA ===
-        private val heartbeatRunnable: Runnable = object : Runnable {
+    // ============ BLOCK 3: QUEUE ENGINE (list -> chat) ============
+    private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
                 process()
@@ -338,11 +355,48 @@ class AutoAccessibilityService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
+    fun startQueue() {
+        queueActive = true
+        expectingChat = false
+        wrongPkgCount = 0
+        sending = false
+        analyzing = false
+        ourLastCount = 0
+        qHandler.removeCallbacksAndMessages(null)
+        val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        try { wakeLock?.release() } catch (_: Exception) { }
+        val wl: PowerManager.WakeLock =
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "autoreply:queue")
+        wl.acquire(60 * 60 * 1000L)
+        wakeLock = wl
+        showOverlay()
+        updatePauseBtn()
+        dbg("Queue ON")
+        ObserverLog.log(this, "QUEUE ON pkg=" + Prefs.queuePkg(this))
+        scheduleProcess(500)
+        qHandler.postDelayed(heartbeatRunnable, 12000)
+    }
+
+    fun stopQueue() {
+        queueActive = false
+        expectingChat = false
+        sending = false
+        analyzing = false
+        qHandler.removeCallbacksAndMessages(null)
+        handler.removeCallbacksAndMessages(null)
+        try { wakeLock?.release() } catch (_: Exception) { }
+        wakeLock = null
+        updatePauseBtn()
+        dbg("Queue OFF - sirf data save")
+        ObserverLog.log(this, "QUEUE OFF")
+    }
+
     private fun handleList(root: AccessibilityNodeInfo) {
         val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
         val fresh: List<Pair<AccessibilityNodeInfo, String>> =
             work.filter { !wasRecentlyHandled(it.second) }
         dbg("List: " + work.size + " rows, " + fresh.size + " fresh")
+        ObserverLog.log(this, "LIST rows=" + work.size + " fresh=" + fresh.size)
         if (fresh.isEmpty()) {
             return
         }
@@ -368,6 +422,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (target != null && target.isClickable) {
             val ok: Boolean = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             dbg(if (ok) "Row clicked" else "Row click failed")
+            ObserverLog.log(this, "ROW CLICK " + name + " ok=" + ok)
             return
         }
         if (nameNode != null) {
@@ -382,126 +437,7 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    private fun findLeafWithText(
-        node: AccessibilityNodeInfo,
-        text: String,
-        depth: Int
-    ): AccessibilityNodeInfo? {
-        if (depth > 12) return null
-        val t: String? = node.text?.toString()
-        if (t != null && t.trim() == text && node.childCount == 0) return node
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) {
-                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
-                if (f != null) return f
-            }
-        }
-        return null
-    }
-
-    // === BLOCK 4 ISKE NICHE AAYEGA ===
-        private fun findWorkRows(
-        root: AccessibilityNodeInfo
-    ): List<Pair<AccessibilityNodeInfo, String>> {
-        val dw: Int = resources.displayMetrics.widthPixels
-        val found = ArrayList<Triple<AccessibilityNodeInfo, String, Int>>()
-        findSignalsIn(root, dw, found, 0)
-        found.sortBy { it.third }
-        val out = ArrayList<Pair<AccessibilityNodeInfo, String>>()
-        val seen = HashSet<String>()
-        for (t in found) {
-            if (t.second !in seen) {
-                seen.add(t.second)
-                out.add(Pair(t.first, t.second))
-            }
-        }
-        return out
-    }
-
-    private fun findSignalsIn(
-        node: AccessibilityNodeInfo,
-        dw: Int,
-        out: MutableList<Triple<AccessibilityNodeInfo, String, Int>>,
-        depth: Int
-    ) {
-        if (depth > 18) return
-        if (node.childCount == 0) {
-            val t: String? = node.text?.toString()?.trim()
-            val cd: String? = node.contentDescription?.toString()?.trim()
-            val s: String = if (t != null && t.isNotEmpty()) t
-                            else if (cd != null && cd.isNotEmpty()) cd
-                            else ""
-            if (s.isNotEmpty()) {
-                val isBadge: Boolean = s.matches(Regex("^\\d{1,2}$"))
-                val isFreshTime: Boolean =
-                    s.matches(Regex("^\\d{1,2}:\\d{2}$")) && isNow(s)
-                if (isBadge || isFreshTime) {
-                    val r = Rect()
-                    node.getBoundsInScreen(r)
-                    if (((r.left + r.right) / 2) > dw * 0.60) {
-                        val row: AccessibilityNodeInfo? = findRowContainer(node, dw, 0)
-                        if (row != null) {
-                            val texts = ArrayList<String>()
-                            collectLeafTexts(row, texts, 0)
-                            var name: String = "friend"
-                            for (x in texts) {
-                                if (x.length in 2..30 &&
-                                    !x.contains(":") &&
-                                    !x.startsWith("[Match]") &&
-                                    !x.startsWith("[Online]") &&
-                                    !x.matches(Regex("^\\d{1,2}(:\\d{2})?.*")) &&
-                                    !isSystemRow(x)
-                                ) {
-                                    name = x
-                                    break
-                                }
-                            }
-                            if (!isSystemRow(name) && out.none { it.second == name }) {
-                                out.add(Triple(row, name, r.top))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) findSignalsIn(c, dw, out, depth + 1)
-        }
-    }
-
-    private fun isNow(timeStr: String): Boolean {
-        try {
-            val parts: List<String> = timeStr.split(":")
-            val h: Int = parts[0].toInt()
-            val m: Int = parts[1].toInt()
-            val cal: java.util.Calendar = java.util.Calendar.getInstance()
-            val nowH: Int = cal.get(java.util.Calendar.HOUR_OF_DAY)
-            val nowM: Int = cal.get(java.util.Calendar.MINUTE)
-            val diff: Int = kotlin.math.abs((h * 60 + m) - (nowH * 60 + nowM))
-            return diff <= 2
-        } catch (e: Exception) {
-            return false
-        }
-    }
-
-    private fun findRowContainer(
-        node: AccessibilityNodeInfo,
-        dw: Int,
-        depth: Int
-    ): AccessibilityNodeInfo? {
-        if (depth > 8) return null
-        val p: AccessibilityNodeInfo? = node.parent
-        if (p == null) return node
-        val r = Rect()
-        p.getBoundsInScreen(r)
-        if (r.width() > dw * 0.5) return p
-        return findRowContainer(p, dw, depth + 1)
-    }
-
-    // [LOCK-5MIN] hamara msg last + pichle 5 min mein reply = next chat.
-    // Unka naya msg hamesha jawab payega (ye check baad mein hai).
+    // ============ BLOCK 4: CHAT ENGINE (scrape + reply) ============
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
             dbg("Chat loading...")
@@ -523,6 +459,7 @@ class AutoAccessibilityService : AccessibilityService() {
             analyzedKey = key
             analyzedAt = System.currentTimeMillis()
             dbg("Their msg - analyzing")
+            ObserverLog.log(this, "CHAT their msg from=" + key + ": " + last.first.take(30))
             handleTheirMessage(msgs, key)
             return
         }
@@ -558,17 +495,18 @@ class AutoAccessibilityService : AccessibilityService() {
             analyzing = false
             if (reply.isNullOrBlank()) {
                 dbg("Reply failed - skip chat")
+                ObserverLog.log(this, "REPLY FAILED sender=" + sender)
                 handler.post { goNextOrBack() }
                 return@thread
             }
             ChatHistory.add(this, sender, "them", newMsg)
             ChatHistory.add(this, sender, "me", reply)
+            ObserverLog.log(this, "REPLY -> " + reply.take(40))
             handler.post { typeAndSend(reply) }
         }
     }
 
-    // === BLOCK 5 ISKE NICHE AAYEGA ===
-        private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
+    private fun scrapeMessages(root: AccessibilityNodeInfo): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
@@ -723,6 +661,7 @@ class AutoAccessibilityService : AccessibilityService() {
         recordHandler.postDelayed(recordRunnable, 1500)
     }
 
+    // ============ BLOCK 5: SEND + NAVIGATION + HELPERS ============
     private fun typeAndSend(reply: String) {
         if (sending) {
             dbg("Already sending - skip")
@@ -835,7 +774,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 sy = ((br.top + br.bottom) / 2).toFloat()
             }
         }
-
         if (btn != null) {
             dbg("Click SEND (node)")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -913,6 +851,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 }
                 if (ok) {
                     dbg("Next unread clicked")
+                    ObserverLog.log(this, "NEXT UNREAD clicked")
                     expectingChat = true
                     sending = false
                     analyzing = false
@@ -922,7 +861,26 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }
         dbg("Back to list")
+        ObserverLog.log(this, "BACK to list")
         performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    private fun findLeafWithText(
+        node: AccessibilityNodeInfo,
+        text: String,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 12) return null
+        val t: String? = node.text?.toString()
+        if (t != null && t.trim() == text && node.childCount == 0) return node
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) {
+                val f: AccessibilityNodeInfo? = findLeafWithText(c, text, depth + 1)
+                if (f != null) return f
+            }
+        }
+        return null
     }
 
     private fun findNodeWithText(
@@ -943,6 +901,105 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }
         return null
+    }
+
+    private fun findWorkRows(
+        root: AccessibilityNodeInfo
+    ): List<Pair<AccessibilityNodeInfo, String>> {
+        val dw: Int = resources.displayMetrics.widthPixels
+        val found = ArrayList<Triple<AccessibilityNodeInfo, String, Int>>()
+        findSignalsIn(root, dw, found, 0)
+        found.sortBy { it.third }
+        val out = ArrayList<Pair<AccessibilityNodeInfo, String>>()
+        val seen = HashSet<String>()
+        for (t in found) {
+            if (t.second !in seen) {
+                seen.add(t.second)
+                out.add(Pair(t.first, t.second))
+            }
+        }
+        return out
+    }
+
+    private fun findSignalsIn(
+        node: AccessibilityNodeInfo,
+        dw: Int,
+        out: MutableList<Triple<AccessibilityNodeInfo, String, Int>>,
+        depth: Int
+    ) {
+        if (depth > 18) return
+        if (node.childCount == 0) {
+            val t: String? = node.text?.toString()?.trim()
+            val cd: String? = node.contentDescription?.toString()?.trim()
+            val s: String = if (t != null && t.isNotEmpty()) t
+                            else if (cd != null && cd.isNotEmpty()) cd
+                            else ""
+            if (s.isNotEmpty()) {
+                val isBadge: Boolean = s.matches(Regex("^\\d{1,2}$"))
+                val isFreshTime: Boolean =
+                    s.matches(Regex("^\\d{1,2}:\\d{2}$")) && isNow(s)
+                if (isBadge || isFreshTime) {
+                    val r = Rect()
+                    node.getBoundsInScreen(r)
+                    if (((r.left + r.right) / 2) > dw * 0.60) {
+                        val row: AccessibilityNodeInfo? = findRowContainer(node, dw, 0)
+                        if (row != null) {
+                            val texts = ArrayList<String>()
+                            collectLeafTexts(row, texts, 0)
+                            var name: String = "friend"
+                            for (x in texts) {
+                                if (x.length in 2..30 &&
+                                    !x.contains(":") &&
+                                    !x.startsWith("[Match]") &&
+                                    !x.startsWith("[Online]") &&
+                                    !x.matches(Regex("^\\d{1,2}(:\\d{2})?.*")) &&
+                                    !isSystemRow(x)
+                                ) {
+                                    name = x
+                                    break
+                                }
+                            }
+                            if (!isSystemRow(name) && out.none { it.second == name }) {
+                                out.add(Triple(row, name, r.top))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val c: AccessibilityNodeInfo? = node.getChild(i)
+            if (c != null) findSignalsIn(c, dw, out, depth + 1)
+        }
+    }
+
+    private fun isNow(timeStr: String): Boolean {
+        try {
+            val parts: List<String> = timeStr.split(":")
+            val h: Int = parts[0].toInt()
+            val m: Int = parts[1].toInt()
+            val cal: java.util.Calendar = java.util.Calendar.getInstance()
+            val nowH: Int = cal.get(java.util.Calendar.HOUR_OF_DAY)
+            val nowM: Int = cal.get(java.util.Calendar.MINUTE)
+            val diff: Int = kotlin.math.abs((h * 60 + m) - (nowH * 60 + nowM))
+            return diff <= 2
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun findRowContainer(
+        node: AccessibilityNodeInfo,
+        dw: Int,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > 8) return null
+        val p: AccessibilityNodeInfo? = node.parent
+        if (p == null) return node
+        val r = Rect()
+        p.getBoundsInScreen(r)
+        if (r.width() > dw * 0.5) return p
+        return findRowContainer(p, dw, depth + 1)
     }
 
     private fun tap(x: Float, y: Float) {
@@ -973,6 +1030,10 @@ class AutoAccessibilityService : AccessibilityService() {
         if (pkg != Prefs.queuePkg(this)) return
 
         scheduleRecord()
+
+        // [OBSERVER] har event log + macro recorder hook
+        ObserverLog.log(this, "EVT pkg=" + pkg + " type=" + event.eventType + " cls=" + (event.className ?: "-"))
+        recorder?.onEvent(event)
 
         if (!queueActive) return
         if (sending || analyzing) return
