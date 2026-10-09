@@ -289,11 +289,21 @@ object ReplyGenerator {
 
     // === BLOCK 3 ISKE NICHE AAYEGA ===
         // ==================================================================
-    // [SECTION 7] localReply() - PART 1
-    // KAHAAN: askOpenAI ke neeche
-    // KYUN: Jab API key nahi hai tab ye template engine chalta hai.
-    //        PART 1 mein: helpers + SAFETY branches (AI sach, explicit,
-    //        photo, contact, paise/milna) + FACT answers (age/city/work).
+        // ==================================================================
+    // [HELPER] pick()
+    // KYUN: Sab banks (ackBank, continueBank, basicQuestions) se random
+    //        reply chunne ke liye. Bina iske "Unresolved reference: pick"
+    //        error aata hai. Isliye is file mein sirf EK pick hona chahiye.
+    // ==================================================================
+    fun pick(list: List<String>): String {
+        return list[Random.nextInt(list.size)]
+    }
+
+    // ==================================================================
+    // [SECTION 7] localReply() - COMPLETE
+    // PART 1: helpers (85/15 budget) + SAFETY (AI sach, explicit, photo,
+    //         contact, paise/milna) + FACT answers (age/city/work/naam)
+    // PART 2: normal flow (85% reply, 15% basic sawaal)
     // ==================================================================
     private fun localReply(
         context: Context,
@@ -308,7 +318,7 @@ object ReplyGenerator {
         // ---------- helpers ----------
 
         // 7a) basic sawaal kab poochhein: 15% chance, ya jab 6 messages
-        //     se koi sawaal nahi poocha (conversation atki hui lage)
+        //     se koi sawaal nahi poocha (conversation atki lage)
         fun shouldAskBasic(): Boolean {
             val myRecent = myMsgs.takeLast(6)
             val askedCount = myRecent.count { m ->
@@ -349,8 +359,8 @@ object ReplyGenerator {
             return pick(
                 listOf(
                     "nahi 😊",
-                    "nahi ji😊",
-                    " hoon 😊"
+                    "yakin karo 😊",
+                    "nahi hu yrrr pgl ho kya 😊"
                 )
             )
         }
@@ -408,7 +418,7 @@ object ReplyGenerator {
             )
         }
 
-        // ---------- FACT ANSWERS (unka sawaal -> seedha chhota jawab) ----------
+        // ---------- FACT ANSWERS ----------
 
         // 7i) age
         if (lower.contains("age") &&
@@ -454,16 +464,11 @@ object ReplyGenerator {
             )
         }
 
-    // === BLOCK 4 ISKE NICHE AAYEGA ===
-            // ==================================================================
-        // [SECTION 8] localReply() - PART 2
-        // KAHAAN: PART 1 ke neeche, function ke andar hi
-        // KYUN: Yahan normal conversation chalti hai - 85% unka jawab,
-        //        15% basic sawaal. Ye file ka LAST section hai.
+        // ==================================================================
+        // [SECTION 8] PART 2 - normal conversation flow
         // ==================================================================
 
-        // 8a) unhone SAWAAL poocha (kya/kaise/kahan/kyun...) - humein uska
-        //     specific jawab nahi pata, to short reply/continue line do
+        // 8a) unhone SAWAAL poocha - short reply/continue line do
         val theyAsked = lower.contains("?") ||
             listOf(
                 "kya", "kaise", "kese", "kahan", "kha ", "kidhar",
@@ -507,8 +512,7 @@ object ReplyGenerator {
             )
         }
 
-        // 8e) baki SAB cases - normal statement: 85% ack/self-share,
-        //     15% basic sawaal
+        // 8e) baki SAB cases - 85% ack/self-share, 15% basic sawaal
         return replyOrAsk(
             listOf(
                 pick(ackBank),
@@ -520,6 +524,3 @@ object ReplyGenerator {
         )
     }
 }
-
-    
-    
