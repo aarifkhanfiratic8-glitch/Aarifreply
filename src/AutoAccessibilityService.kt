@@ -62,6 +62,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private var ourLastCount: Int = 0
     private var sentInChat: Int = 0
     private var emptyTries: Int = 0
+    private var openedWithBadge: Boolean = false
     private var profileBackCount: Int = 0
 
     // BRAIN: 1 min WAIT -> naqsh auto-play (msg aaya -> turant queue)
@@ -261,6 +262,7 @@ class AutoAccessibilityService : AccessibilityService() {
             // bada dark circle (menu khulne pe dikhta hai) - reference image jaisa
             val bgc = View(this)
             bgc.background = bgCircle(0xE6263238.toInt())
+            bgc.visibility = View.GONE
             menuBg = bgc
             val bgLp = FrameLayout.LayoutParams(dp(215), dp(215))
             bgLp.gravity = Gravity.CENTER
@@ -280,6 +282,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 dbg("Log copied")
                 true
             }
+            dt.visibility = View.GONE
             debugText = dt
             val dtLp = FrameLayout.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -586,6 +589,7 @@ class AutoAccessibilityService : AccessibilityService() {
         ourLastCount = 0
         sentInChat = 0
         emptyTries = 0
+        openedWithBadge = pick.isBadge
         dbg("Open: " + pick.name)
         ObserverLog.log(this, "OPEN " + pick.name + " badge=" + pick.isBadge)
         clickRowTextArea(pick.node, pick.name)
@@ -669,58 +673,55 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
-        if (msgs.isEmpty()) {
-            if (sentInChat >= MAX_SENDS || chatLocked(key)) {
-                dbg("Empty -> next")
-                goNextOrBack()
-                return
-            }
-            emptyTries++
-            if (emptyTries < 3) {
-                dbg("Loading " + emptyTries + "/3")
-                scheduleProcess(2500)
-                return
-            }
-            // 3 baar wait kiya, kuch nahi mila -> fresh chat = 1 greeting
-            greetOnce(key)
-            return
+        ObserverLog.log(this, "CHAT " + key + " msgs=" + msgs.size +
+            " last=" + (msgs.lastOrNull()?.first ?: "-").take(20) +
+            " side=" + (if (msgs.lastOrNull()?.second == true) "me" else "them"))
+
+        // [RULE] pehle AAKHRI UNKA message dhundo (hamara msg neeche ho to bhi)
+        val lastTheirs: Pair<String, Boolean>? = msgs.lastOrNull {
+            !it.second && !isOurOwnText(key, it.first)
         }
+
+        // 1 message ho chuka is visit mein -> next
         if (sentInChat >= MAX_SENDS) {
             dbg("Sent 1 -> next")
             goNextOrBack()
             return
         }
-        val last: Pair<String, Boolean>? = msgs.lastOrNull()
-        if (last != null && !last.second) {
-            if (isOurOwnText(key, last.first)) {
-                ourLastCount++
-                if (lockActive(key)) { goNextOrBack(); return }
-                if (ourLastCount >= 2) {
-                    markAnalyzed(key)
-                    goNextOrBack()
-                    return
-                }
-                scheduleProcess(3000)
-                return
-            }
-            ourLastCount = 0
+
+        // unka msg mila -> TURANT reply (koi lock nahi, koi rukawat nahi)
+        if (lastTheirs != null) {
             if (analyzing) return
             analyzing = true
+            ourLastCount = 0
             markAnalyzed(key)
-            dbg("Reply -> " + last.first.take(15))
-            ObserverLog.log(this, "CHAT their: " + last.first.take(30))
+            dbg("Reply -> " + lastTheirs.first.take(15))
+            ObserverLog.log(this, "CHAT their: " + lastTheirs.first.take(30))
             handleTheirMessage(msgs, key)
             return
         }
-        if (lockActive(key)) { goNextOrBack(); return }
-        val realFromThem: Boolean =
-            msgs.any { !it.second && !isOurOwnText(key, it.first) }
-        if (!realFromThem) {
-            if (chatLocked(key) || sentInChat >= MAX_SENDS) {
-                markAnalyzed(key)
+
+        // unka koi real msg nahi mila
+        if (msgs.isEmpty()) {
+            if (chatLocked(key)) {
+                dbg("Empty -> next")
                 goNextOrBack()
                 return
             }
+            emptyTries++
+            val maxTries: Int = if (openedWithBadge) 5 else 3
+            if (emptyTries < maxTries) {
+                dbg("Loading " + emptyTries + "/" + maxTries)
+                scheduleProcess(2500)
+                return
+            }
+            // kuch nahi mila -> fresh chat = 1 greeting
+            greetOnce(key)
+            return
+        }
+
+        // sirf HAMARE msgs dikhe aur kabhi reply nahi diya is bande ko
+        if (!chatLocked(key)) {
             greetOnce(key)
             return
         }
@@ -750,7 +751,7 @@ class AutoAccessibilityService : AccessibilityService() {
         val contextLines: List<String> = recent.map {
             if (it.second) "You: " + it.first else "Them: " + it.first
         }
-        val newMsg: String = msgs[msgs.size - 1].first
+        val newMsg: String = (msgs.lastOrNull { !it.second } ?: msgs.last()).first
         thread {
             val reply: String? = try {
                 ReplyGenerator.generate(this, sender, contextLines, newMsg)
@@ -1246,10 +1247,9 @@ class AutoAccessibilityService : AccessibilityService() {
                             else if (cd != null && cd.isNotEmpty()) cd
                             else ""
             if (s.isNotEmpty()) {
+                // [RULE] sirf RED DOT (badge) wali row khule. Time se nahi.
                 val isBadge: Boolean = s.matches(Regex("^\\d{1,2}$"))
-                val isFreshTime: Boolean =
-                    s.matches(Regex("^\\d{1,2}:\\d{2}$")) && isNow(s)
-                if (isBadge || isFreshTime) {
+                if (isBadge) {
                     val r = Rect()
                     node.getBoundsInScreen(r)
                     if (((r.left + r.right) / 2) > dw * 0.60) {
