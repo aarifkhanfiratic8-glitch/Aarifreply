@@ -54,6 +54,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
+    private var sentInChat: Int = 0
 
     override fun onServiceConnected() {
         instance = this
@@ -102,6 +103,13 @@ class AutoAccessibilityService : AccessibilityService() {
         return android.graphics.Color.argb(a, r, g, b)
     }
 
+    private fun bgCircle(color: Int): GradientDrawable {
+        val d = GradientDrawable()
+        d.shape = GradientDrawable.OVAL
+        d.setColor(color)
+        return d
+    }
+
     private fun bg3d(color: Int): GradientDrawable {
         val d = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
@@ -111,20 +119,61 @@ class AutoAccessibilityService : AccessibilityService() {
         return d
     }
 
-    private fun makeOverlayButton(text: String, color: Int, action: () -> Unit): Button {
+    private fun makeOverlayButton(text: String, color: Int): Button {
         val b = Button(this)
         b.text = text
-        b.textSize = 11f
+        b.textSize = 10f
         b.setTextColor(0xFFFFFFFF.toInt())
-        b.background = bg3d(color)
         b.elevation = 16f
         b.minWidth = 0
         b.minimumWidth = 0
         b.minHeight = 0
         b.minimumHeight = 0
-        b.setPadding(22, 8, 22, 8)
-        b.setOnClickListener { action() }
+        b.setPadding(2, 2, 2, 2)
+        // gol button 38dp
+        val sizePx = dp(38)
+        b.layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
+        b.background = bgCircle(color)
         return b
+    }
+
+    // [DRAG-ANYWHERE] kisi bhi button ko pakad ke khinch sakte ho.
+    // Chhota tap = click, khinchna = poore overlay ko move.
+    private fun attachDragAndClick(v: View, action: () -> Unit) {
+        v.setOnTouchListener(object : View.OnTouchListener {
+            private var downX: Float = 0f
+            private var downY: Float = 0f
+            private var moved: Boolean = false
+            override fun onTouch(view: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.rawX
+                        downY = event.rawY
+                        moved = false
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx: Int = (event.rawX - downX).toInt()
+                        val dy: Int = (event.rawY - downY).toInt()
+                        if (!moved && kotlin.math.abs(dx) < 14 && kotlin.math.abs(dy) < 14) return true
+                        moved = true
+                        downX = event.rawX
+                        downY = event.rawY
+                        val lp: WindowManager.LayoutParams =
+                            view.rootView.layoutParams as WindowManager.LayoutParams
+                        lp.x = lp.x - dx
+                        lp.y = lp.y + dy
+                        wm?.updateViewLayout(view.rootView, lp)
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!moved) action()
+                        return true
+                    }
+                }
+                return false
+            }
+        })
     }
 
     private fun showOverlay() {
@@ -156,21 +205,25 @@ class AutoAccessibilityService : AccessibilityService() {
                 true
             }
 
-            val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt()) {
+            val rowBtns = LinearLayout(this)
+            rowBtns.orientation = LinearLayout.HORIZONTAL
+
+            val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt())
+            pauseBtn = pb
+            attachDragAndClick(pb) {
                 if (queueActive) stopQueue() else startQueue()
             }
-            pauseBtn = pb
-            box.addView(pb)
+            rowBtns.addView(pb)
 
-            val recB: Button = makeOverlayButton("REC", 0xFF6A1B9A.toInt()) {
-                toggleRec()
-            }
-            box.addView(recB)
+            val recB: Button = makeOverlayButton("REC", 0xFF6A1B9A.toInt())
+            attachDragAndClick(recB) { toggleRec() }
+            rowBtns.addView(recB)
 
-            val playB: Button = makeOverlayButton("PLAY", 0xFF2E7D32.toInt()) {
-                togglePlay()
-            }
-            box.addView(playB)
+            val playB: Button = makeOverlayButton("PLAY", 0xFF2E7D32.toInt())
+            attachDragAndClick(playB) { togglePlay() }
+            rowBtns.addView(playB)
+
+            box.addView(rowBtns)
 
             dt.setOnTouchListener(object : View.OnTouchListener {
                 private var downX: Float = 0f
@@ -227,10 +280,10 @@ class AutoAccessibilityService : AccessibilityService() {
         val b = pauseBtn ?: return
         if (queueActive) {
             b.text = "ON"
-            b.background = bg3d(0xFF2E7D32.toInt())
+            b.background = bgCircle(0xFF2E7D32.toInt())
         } else {
             b.text = "OFF"
-            b.background = bg3d(0xFFC62828.toInt())
+            b.background = bgCircle(0xFFC62828.toInt())
         }
     }
 
@@ -333,6 +386,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (isInChat(root)) {
             profileBackCount = 0
             if (expectingChat) {
+                sentInChat = 0
                 expectingChat = false
                 openedAt = System.currentTimeMillis()
                 dbg("Chat opened: " + lastSender)
@@ -418,6 +472,7 @@ class AutoAccessibilityService : AccessibilityService() {
         sending = false
         analyzing = false
         ourLastCount = 0
+        sentInChat = 0
         dbg("Open: " + pick.second)
         clickRowTextArea(pick.first, pick.second)
         expectingChat = true
@@ -459,8 +514,20 @@ class AutoAccessibilityService : AccessibilityService() {
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         if (msgs.isEmpty()) {
+            if (wasRecentlyHandled(key)) {
+                dbg("Fresh chat - no real msgs - next")
+                ObserverLog.log(this, "FRESH CHAT no msgs -> next")
+                goNextOrBack()
+                return
+            }
             dbg("No msgs yet - waiting")
             scheduleProcess(2500)
+            return
+        }
+        if (sentInChat >= 3) {
+            dbg("Sent cap reached - next chat")
+            ObserverLog.log(this, "SENT CAP -> next")
+            goNextOrBack()
             return
         }
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
@@ -523,7 +590,12 @@ class AutoAccessibilityService : AccessibilityService() {
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
         collectMessages(root, out, dw, dh, 0)
-        return out.takeLast(12)
+        // [FIX-SPAM] profile card ke texts (naam, age, VIP) ko message mat samjho
+        val chatName: String = try { readChatName(root).trim().lowercase() } catch (e: Exception) { "" }
+        return out.takeLast(12).filter { m ->
+            val t: String = m.first.trim().lowercase()
+            t.isNotEmpty() && t != chatName
+        }
     }
 
     private fun hasTextChild(node: AccessibilityNodeInfo): Boolean {
@@ -563,6 +635,8 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
+        if (t.matches(Regex("^\\d{1,3}$"))) return true
+        if (low.matches(Regex("^vip\\d*$"))) return true
         if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
         if (t.matches(Regex("^\\d{4}/.*"))) return true
         if (t.matches(Regex("^\\d+/\\d+$"))) return true
@@ -687,6 +761,7 @@ class AutoAccessibilityService : AccessibilityService() {
             dbg("Already sending - skip")
             return
         }
+        sentInChat++
         sending = true
         pendingReply = reply
         doSetText()
