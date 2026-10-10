@@ -635,12 +635,12 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
-        if (t.matches(Regex("^\\d{1,3}$"))) return true
-        if (low.matches(Regex("^vip\\d*$"))) return true
         if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
         if (t.matches(Regex("^\\d{4}/.*"))) return true
         if (t.matches(Regex("^\\d+/\\d+$"))) return true
         val low: String = t.lowercase()
+        if (t.matches(Regex("^\\d{1,3}$"))) return true
+        if (low.matches(Regex("^vip\\d*$"))) return true
         if (low == "say something") return true
         if (t.endsWith("…") || t.endsWith("...")) return true
         if (low.contains("great fit")) return true
