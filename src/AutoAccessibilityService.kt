@@ -42,6 +42,8 @@ class AutoAccessibilityService : AccessibilityService() {
     private var overlayView: View? = null
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
+    private var panelBox: LinearLayout? = null
+    private var bubbleView: TextView? = null
     private var wrongPkgCount: Int = 0
     private val lockAt: HashMap<String, Long> = HashMap()
     private val ourSent: HashMap<String, MutableList<String>> = HashMap()
@@ -59,10 +61,15 @@ class AutoAccessibilityService : AccessibilityService() {
     private var sentInChat: Int = 0
     private var profileBackCount: Int = 0
 
-    // BRAIN: WAIT counter (auto-observe HATA DIYA)
+    // BRAIN: 1 min WAIT -> naqsh auto-play (msg aaya -> turant queue)
     private var observeMode: Boolean = false
     private var idleSince: Long = 0L
-    private val OBSERVE_IDLE_MS: Long = 20000L
+    private val OBSERVE_IDLE_MS: Long = 60000L
+
+    // PANEL: bubble tap -> panel, 5 sec baad khud hide
+    private var panelVisible: Boolean = false
+    private val panelHandler: Handler = Handler(Looper.getMainLooper())
+    private val panelHideRunnable: Runnable = Runnable { hidePanel() }
 
     override fun onServiceConnected() {
         instance = this
@@ -75,6 +82,7 @@ class AutoAccessibilityService : AccessibilityService() {
         info.notificationTimeout = 100
         setServiceInfo(info)
         ObserverLog.log(this, "SERVICE CONNECTED")
+        showOverlay()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -96,13 +104,11 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // chat lock: reply ke baad 20 min tak NA khule (jab tak unka badge-dot msg na aaye)
     private fun chatLocked(name: String): Boolean {
         val t: Long = lockAt[name] ?: return false
         return System.currentTimeMillis() - t < LOCK_MS
     }
 
-    // [SELF-FIX] jo msg humne khud bheja tha, wo scrape mein "unka" na bane
     private fun rememberSent(key: String, text: String) {
         val l: MutableList<String> = ourSent.getOrPut(key) { ArrayList() }
         l.add(text.trim())
@@ -131,7 +137,7 @@ class AutoAccessibilityService : AccessibilityService() {
         analyzedAt = System.currentTimeMillis()
     }
 
-    // ============ BLOCK 2: OVERLAY UI ============
+    // ============ BLOCK 2: BUBBLE + PANEL UI ============
     private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
@@ -156,6 +162,8 @@ class AutoAccessibilityService : AccessibilityService() {
         return d
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     private fun makeOverlayButton(text: String, color: Int): Button {
         val b = Button(this)
         b.text = text
@@ -173,7 +181,7 @@ class AutoAccessibilityService : AccessibilityService() {
         return b
     }
 
-    // drag ANYWHERE: chhota tap = click, khinchna = overlay move
+    // tap = action, khinchna = pura overlay move
     private fun attachDragAndClick(v: View, action: () -> Unit) {
         v.setOnTouchListener(object : View.OnTouchListener {
             private var downX: Float = 0f
@@ -211,27 +219,41 @@ class AutoAccessibilityService : AccessibilityService() {
         })
     }
 
+    private fun showPanel() {
+        panelBox?.visibility = View.VISIBLE
+        panelVisible = true
+        panelHandler.removeCallbacks(panelHideRunnable)
+        panelHandler.postDelayed(panelHideRunnable, 5000)
+    }
+
+    private fun hidePanel() {
+        panelBox?.visibility = View.GONE
+        panelVisible = false
+        panelHandler.removeCallbacks(panelHideRunnable)
+    }
+
     private fun showOverlay() {
         if (overlayView != null) return
         try {
             wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val box = LinearLayout(this)
             box.orientation = LinearLayout.VERTICAL
-            box.setPadding(6, 6, 6, 6)
+            box.setPadding(4, 4, 4, 4)
             box.elevation = 20f
+
+            // ---- PANEL (bubble tap pe khulta hai, 5s baad khud band) ----
+            val panel = LinearLayout(this)
+            panel.orientation = LinearLayout.VERTICAL
+            panel.setPadding(6, 6, 6, 6)
+            panel.background = bg3d(0xFF263238.toInt())
+            panelBox = panel
 
             val dt = TextView(this)
             dt.textSize = 9f
             dt.maxLines = 2
             dt.setTextColor(0xFFFFFFFF.toInt())
-            dt.text = "AutoReply ready"
+            dt.text = "AutoReply"
             dt.setPadding(14, 6, 14, 6)
-            dt.background = bg3d(0xFF37474F.toInt())
-            dt.elevation = 12f
-            debugText = dt
-            box.addView(dt)
-
-            // LOGS: debug text LONG-PRESS = observer log copy
             dt.setOnLongClickListener {
                 val txt: String = ObserverLog.dump(this)
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -239,6 +261,8 @@ class AutoAccessibilityService : AccessibilityService() {
                 dbg("Log copied")
                 true
             }
+            debugText = dt
+            panel.addView(dt)
 
             val rowBtns = LinearLayout(this)
             rowBtns.orientation = LinearLayout.HORIZONTAL
@@ -246,19 +270,53 @@ class AutoAccessibilityService : AccessibilityService() {
             val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt())
             pauseBtn = pb
             attachDragAndClick(pb) {
+                showPanel()
                 if (queueActive) stopQueue() else startQueue()
             }
             rowBtns.addView(pb)
 
             val recB: Button = makeOverlayButton("REC", 0xFF6A1B9A.toInt())
-            attachDragAndClick(recB) { toggleRec() }
+            attachDragAndClick(recB) {
+                showPanel()
+                toggleRec()
+            }
             rowBtns.addView(recB)
 
             val playB: Button = makeOverlayButton("PLAY", 0xFF2E7D32.toInt())
-            attachDragAndClick(playB) { togglePlay() }
+            attachDragAndClick(playB) {
+                showPanel()
+                togglePlay()
+            }
             rowBtns.addView(playB)
 
-            box.addView(rowBtns)
+            panel.addView(rowBtns)
+
+            // EXIT: sab band + panel hide (bubble rehta hai)
+            val exitB: Button = makeOverlayButton("X", 0xFF455A64.toInt())
+            attachDragAndClick(exitB) {
+                stopQueue()
+                hidePanel()
+            }
+            panel.addView(exitB)
+
+            panel.visibility = View.GONE
+            box.addView(panel)
+
+            // ---- BUBBLE (hamesha dikhta hai) ----
+            val bub = TextView(this)
+            bub.text = "AI"
+            bub.textSize = 14f
+            bub.setTextColor(0xFFFFFFFF.toInt())
+            bub.gravity = Gravity.CENTER
+            val bsize = dp(44)
+            bub.layoutParams = LinearLayout.LayoutParams(bsize, bsize)
+            bub.background = bgCircle(0xFF00695C.toInt())
+            bub.elevation = 18f
+            bubbleView = bub
+            attachDragAndClick(bub) {
+                if (panelVisible) hidePanel() else showPanel()
+            }
+            box.addView(bub)
 
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -283,6 +341,10 @@ class AutoAccessibilityService : AccessibilityService() {
         overlayView = null
         debugText = null
         pauseBtn = null
+        panelBox = null
+        bubbleView = null
+        panelVisible = false
+        panelHandler.removeCallbacks(panelHideRunnable)
     }
 
     private fun updatePauseBtn() {
@@ -340,7 +402,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    // ============ BLOCK 3: BRAIN (QUEUE <-> OBSERVE) ============
+    // ============ BLOCK 3: BRAIN (QUEUE <-> NAQSH) ============
     private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
@@ -376,7 +438,6 @@ class AutoAccessibilityService : AccessibilityService() {
         wrongPkgCount = 0
         if (currentPkg != pkg) return
 
-        // naqsh chal raha hai -> sirf pending check, kuch aur nahi
         if (recorder?.isPlaying == true) {
             checkPendingDuringObserve(root)
             dbg("OBSERVE run")
@@ -430,7 +491,6 @@ class AutoAccessibilityService : AccessibilityService() {
             val work2: List<WorkRow> = findWorkRows(root)
             val badgeSet: HashSet<String> =
                 work2.filter { it.isBadge }.map { it.name }.toHashSet()
-            // [LOCK] reply ke baad chat band — SIRF badge (unka naya msg) aane pe khule
             val fresh2: List<WorkRow> =
                 work2.filter { badgeSet.contains(it.name) || !chatLocked(it.name) }
             if (fresh2.isNotEmpty()) {
@@ -438,12 +498,13 @@ class AutoAccessibilityService : AccessibilityService() {
                 openRow(fresh2[0])
                 return
             }
-            // koi pending nahi -> WAIT (auto-observe nahi, koi movement nahi)
+            if (observeMode) return
             if (idleSince == 0L) idleSince = System.currentTimeMillis()
             val leftSec: Long =
                 (OBSERVE_IDLE_MS - (System.currentTimeMillis() - idleSince)) / 1000L
             if (leftSec <= 0L) {
-                idleSince = System.currentTimeMillis()
+                idleSince = 0L
+                startObserve()
             } else {
                 dbg("WAIT " + leftSec + "s")
             }
@@ -472,6 +533,7 @@ class AutoAccessibilityService : AccessibilityService() {
         wakeLock = wl
         showOverlay()
         updatePauseBtn()
+        showPanel()
         dbg("Queue ON")
         ObserverLog.log(this, "QUEUE ON pkg=" + Prefs.queuePkg(this))
         scheduleProcess(500)
@@ -533,7 +595,7 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // ---- OBSERVE mode ----
+    // ---- NAQSH auto-play ----
     private fun startObserve() {
         val r = recorder ?: return
         if (r.isPlaying) return
@@ -596,7 +658,6 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             return
         }
-        // [1-MSG] sirf EK message per chat visit
         if (sentInChat >= MAX_SENDS) {
             dbg("Sent 1 -> next")
             goNextOrBack()
@@ -604,7 +665,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
         if (last != null && !last.second) {
-            // unki taraf se kuch dikha — par kya ye hamara khud ka bheja hua?
             if (isOurOwnText(key, last.first)) {
                 ourLastCount++
                 if (lockActive(key)) { goNextOrBack(); return }
@@ -616,7 +676,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 scheduleProcess(3000)
                 return
             }
-            // asli unka message
             ourLastCount = 0
             if (analyzing) return
             analyzing = true
@@ -626,12 +685,10 @@ class AutoAccessibilityService : AccessibilityService() {
             handleTheirMessage(msgs, key)
             return
         }
-        // last apna message hai
         if (lockActive(key)) { goNextOrBack(); return }
         val realFromThem: Boolean =
             msgs.any { !it.second && !isOurOwnText(key, it.first) }
         if (!realFromThem) {
-            // FRESH CHAT: unhone kabhi real msg nahi bheja -> sirf 1 greeting
             if (chatLocked(key) || sentInChat >= MAX_SENDS) {
                 markAnalyzed(key)
                 goNextOrBack()
@@ -640,7 +697,6 @@ class AutoAccessibilityService : AccessibilityService() {
             greetOnce(key)
             return
         }
-        // unhone pehle bheja tha, jawab ho chuka -> next
         markAnalyzed(key)
         goNextOrBack()
     }
@@ -690,7 +746,6 @@ class AutoAccessibilityService : AccessibilityService() {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
-        // input field ki top position = message zone ki neeche ki boundary
         var inputTop: Int = dh
         try {
             val f: AccessibilityNodeInfo? = findInput(root)
@@ -700,7 +755,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 if (!fr.isEmpty) inputTop = fr.top
             }
         } catch (e: Exception) { }
-        // input NA mila -> chat nahi (kuch aur screen hai)
         if (inputTop >= dh) return emptyList()
         collectMessages(root, out, dw, dh, inputTop, 0)
         val chatName: String = try { readChatName(root).trim().lowercase() } catch (e: Exception) { "" }
@@ -736,8 +790,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 if (!r.isEmpty) {
                     val cy: Int = (r.top + r.bottom) / 2
                     val cx: Int = (r.left + r.right) / 2
-                    // [FIX-CHIPS] input field ke 64dp andar ki HAR text = UI chrome
-                    // (quick-reply chips, suggestion rows, hint) -> message NAHI
                     val tooCloseToInput: Boolean = r.bottom > inputTop - dp(64)
                     if (cy > dh * 0.28 && !tooCloseToInput && !looksLikeMeta(t)) {
                         out.add(Pair(t, cx > dw / 2))
@@ -753,7 +805,6 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
-        // quote preview: "khushí: sach batao na mujhe" -> ye message nahi
         if (Regex("^.{2,22}: .+").containsMatchIn(t)) return true
         val low: String = t.lowercase()
         if (t.matches(Regex("^\\d{1,3}$"))) return true
@@ -967,8 +1018,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
     private fun sendFlow() {
         if (!queueActive) { sending = false; return }
         val root: AccessibilityNodeInfo? = rootInActiveWindow
@@ -1042,7 +1091,6 @@ class AutoAccessibilityService : AccessibilityService() {
                 if (last != null && !last.second &&
                     !isOurOwnText(lastSender, last.first) &&
                     !looksLikeMeta(last.first)) {
-                    // beech mein sach mein unka msg aaya
                     analyzing = true
                     markAnalyzed(lastSender)
                     dbg("New msg -> reply")
@@ -1140,7 +1188,6 @@ class AutoAccessibilityService : AccessibilityService() {
         var isBadge: Boolean
     )
 
-    // sirf badge (unread dot/number) = "unka naya msg" guarantee
     private fun findWorkRows(root: AccessibilityNodeInfo): List<WorkRow> {
         val dw: Int = resources.displayMetrics.widthPixels
         val found = ArrayList<WorkRow>()
@@ -1171,9 +1218,9 @@ class AutoAccessibilityService : AccessibilityService() {
                             else if (cd != null && cd.isNotEmpty()) cd
                             else ""
             if (s.isNotEmpty()) {
-                val isBadge: Boolean = s.matches(Regex("^\d{1,2}$"))
+                val isBadge: Boolean = s.matches(Regex("^\\d{1,2}$"))
                 val isFreshTime: Boolean =
-                    s.matches(Regex("^\d{1,2}:\d{2}$")) && isNow(s)
+                    s.matches(Regex("^\\d{1,2}:\\d{2}$")) && isNow(s)
                 if (isBadge || isFreshTime) {
                     val r = Rect()
                     node.getBoundsInScreen(r)
@@ -1188,7 +1235,7 @@ class AutoAccessibilityService : AccessibilityService() {
                                     !x.contains(":") &&
                                     !x.startsWith("[Match]") &&
                                     !x.startsWith("[Online]") &&
-                                    !x.matches(Regex("^\d{1,2}(:\d{2})?.*")) &&
+                                    !x.matches(Regex("^\\d{1,2}(:\\d{2})?.*")) &&
                                     !isSystemRow(x)
                                 ) {
                                     name = x
