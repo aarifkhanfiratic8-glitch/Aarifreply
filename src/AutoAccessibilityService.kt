@@ -26,7 +26,7 @@ import kotlin.concurrent.thread
 
 class AutoAccessibilityService : AccessibilityService() {
 
-    // ============ BLOCK 1: LIFECYCLE + VARS ============
+    // ============ BLOCK 1: LIFECYCLE + VARS ===========
     companion object {
         var instance: AutoAccessibilityService? = null
         var recorder: MacroRecorder? = null
