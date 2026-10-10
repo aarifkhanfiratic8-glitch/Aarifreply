@@ -211,7 +211,24 @@ class AutoAccessibilityService : AccessibilityService() {
         })
     }
 
+    private fun shiftWindow(dx: Int, dy: Int) {
+        val box = overlayView ?: return
+        try {
+            val lp: WindowManager.LayoutParams = box.layoutParams as WindowManager.LayoutParams
+            lp.x += dx
+            lp.y += dy
+            wm?.updateViewLayout(box, lp)
+        } catch (e: Exception) { }
+    }
+
     private fun showMenu() {
+        if (menuVisible) {
+            menuHandler.removeCallbacks(menuHideRunnable)
+            menuHandler.postDelayed(menuHideRunnable, 5000)
+            return
+        }
+        // bubble ki absolute jagah same rahe, isliye window ko pehle upar-bayein shift
+        shiftWindow(-dp(106), -dp(106))
         menuBg?.visibility = View.VISIBLE
         debugText?.visibility = View.VISIBLE
         for (b in menuButtons) b.visibility = View.VISIBLE
@@ -221,9 +238,11 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun hideMenu() {
+        if (!menuVisible) return
         menuBg?.visibility = View.GONE
         debugText?.visibility = View.GONE
         for (b in menuButtons) b.visibility = View.GONE
+        shiftWindow(dp(106), dp(106))
         menuVisible = false
         menuHandler.removeCallbacks(menuHideRunnable)
     }
@@ -318,14 +337,16 @@ class AutoAccessibilityService : AccessibilityService() {
                 hideMenu()
             }
 
+            // [FIX] window sirf utna bada jitna visible (WRAP_CONTENT)
+            // baaki puri screen normally kaam karegi
             val params = WindowManager.LayoutParams(
-                BOX,
-                BOX,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
-            params.gravity = Gravity.TOP or Gravity.END
+            params.gravity = Gravity.TOP or Gravity.START
             params.x = 10
             params.y = 250
             wm?.addView(box, params)
