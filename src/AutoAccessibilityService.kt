@@ -61,6 +61,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
     private var sentInChat: Int = 0
+    private var emptyTries: Int = 0
     private var profileBackCount: Int = 0
 
     // BRAIN: 1 min WAIT -> naqsh auto-play (msg aaya -> turant queue)
@@ -559,11 +560,11 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun openRow(pick: WorkRow) {
         lastSender = pick.name
-        lockAt[pick.name] = System.currentTimeMillis()
         sending = false
         analyzing = false
         ourLastCount = 0
         sentInChat = 0
+        emptyTries = 0
         dbg("Open: " + pick.name)
         ObserverLog.log(this, "OPEN " + pick.name + " badge=" + pick.isBadge)
         clickRowTextArea(pick.node, pick.name)
@@ -648,13 +649,19 @@ class AutoAccessibilityService : AccessibilityService() {
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         if (msgs.isEmpty()) {
-            if (chatLocked(key)) {
+            if (sentInChat >= MAX_SENDS || chatLocked(key)) {
                 dbg("Empty -> next")
                 goNextOrBack()
-            } else {
-                dbg("No msgs, wait")
-                scheduleProcess(2500)
+                return
             }
+            emptyTries++
+            if (emptyTries < 3) {
+                dbg("Loading " + emptyTries + "/3")
+                scheduleProcess(2500)
+                return
+            }
+            // 3 baar wait kiya, kuch nahi mila -> fresh chat = 1 greeting
+            greetOnce(key)
             return
         }
         if (sentInChat >= MAX_SENDS) {
@@ -790,7 +797,7 @@ class AutoAccessibilityService : AccessibilityService() {
                     val cy: Int = (r.top + r.bottom) / 2
                     val cx: Int = (r.left + r.right) / 2
                     val tooCloseToInput: Boolean = r.bottom > inputTop - dp(64)
-                    if (cy > dh * 0.28 && !tooCloseToInput && !looksLikeMeta(t)) {
+                    if (cy > dh * 0.33 && !tooCloseToInput && !looksLikeMeta(t)) {
                         out.add(Pair(t, cx > dw / 2))
                     }
                 }
@@ -937,6 +944,7 @@ class AutoAccessibilityService : AccessibilityService() {
         }
         sentInChat++
         rememberSent(lastSender, reply)
+        lockAt[lastSender] = System.currentTimeMillis()
         sending = true
         pendingReply = reply
         doSetText()
