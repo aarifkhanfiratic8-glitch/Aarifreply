@@ -20,6 +20,8 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.concurrent.thread
@@ -42,8 +44,9 @@ class AutoAccessibilityService : AccessibilityService() {
     private var overlayView: View? = null
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
-    private var panelBox: LinearLayout? = null
+    private var menuBg: View? = null
     private var bubbleView: TextView? = null
+    private val menuButtons: ArrayList<Button> = ArrayList()
     private var wrongPkgCount: Int = 0
     private val lockAt: HashMap<String, Long> = HashMap()
     private val ourSent: HashMap<String, MutableList<String>> = HashMap()
@@ -66,10 +69,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private var idleSince: Long = 0L
     private val OBSERVE_IDLE_MS: Long = 60000L
 
-    // PANEL: bubble tap -> panel, 5 sec baad khud hide
-    private var panelVisible: Boolean = false
-    private val panelHandler: Handler = Handler(Looper.getMainLooper())
-    private val panelHideRunnable: Runnable = Runnable { hidePanel() }
+    // MENU: bubble tap -> arc menu, 5 sec baad khud hide
+    private var menuVisible: Boolean = false
+    private val menuHandler: Handler = Handler(Looper.getMainLooper())
+    private val menuHideRunnable: Runnable = Runnable { hideMenu() }
 
     override fun onServiceConnected() {
         instance = this
@@ -137,22 +140,13 @@ class AutoAccessibilityService : AccessibilityService() {
         analyzedAt = System.currentTimeMillis()
     }
 
-    // ============ BLOCK 2: BUBBLE + PANEL UI ============
+    // ============ BLOCK 2: RADIAL ARC MENU (bubble + arc buttons) ============
     private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
         val g = (android.graphics.Color.green(color) * 0.65 + 255 * 0.35).toInt()
         val b = (android.graphics.Color.blue(color) * 0.65 + 255 * 0.35).toInt()
         return android.graphics.Color.argb(a, r, g, b)
-    }
-
-    private fun bg3d(color: Int): GradientDrawable {
-        val d = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(lighten(color), color)
-        )
-        d.cornerRadius = 45f
-        return d
     }
 
     private fun bgCircle(color: Int): GradientDrawable {
@@ -164,10 +158,10 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun makeOverlayButton(text: String, color: Int): Button {
+    private fun makeMenuButton(text: String, color: Int): Button {
         val b = Button(this)
         b.text = text
-        b.textSize = 10f
+        b.textSize = 9f
         b.setTextColor(0xFFFFFFFF.toInt())
         b.elevation = 16f
         b.minWidth = 0
@@ -175,8 +169,6 @@ class AutoAccessibilityService : AccessibilityService() {
         b.minHeight = 0
         b.minimumHeight = 0
         b.setPadding(2, 2, 2, 2)
-        val sizePx = dp(38)
-        b.layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
         b.background = bgCircle(color)
         return b
     }
@@ -219,41 +211,49 @@ class AutoAccessibilityService : AccessibilityService() {
         })
     }
 
-    private fun showPanel() {
-        panelBox?.visibility = View.VISIBLE
-        panelVisible = true
-        panelHandler.removeCallbacks(panelHideRunnable)
-        panelHandler.postDelayed(panelHideRunnable, 5000)
+    private fun showMenu() {
+        menuBg?.visibility = View.VISIBLE
+        debugText?.visibility = View.VISIBLE
+        for (b in menuButtons) b.visibility = View.VISIBLE
+        menuVisible = true
+        menuHandler.removeCallbacks(menuHideRunnable)
+        menuHandler.postDelayed(menuHideRunnable, 5000)
     }
 
-    private fun hidePanel() {
-        panelBox?.visibility = View.GONE
-        panelVisible = false
-        panelHandler.removeCallbacks(panelHideRunnable)
+    private fun hideMenu() {
+        menuBg?.visibility = View.GONE
+        debugText?.visibility = View.GONE
+        for (b in menuButtons) b.visibility = View.GONE
+        menuVisible = false
+        menuHandler.removeCallbacks(menuHideRunnable)
     }
 
     private fun showOverlay() {
         if (overlayView != null) return
         try {
             wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val box = LinearLayout(this)
-            box.orientation = LinearLayout.VERTICAL
-            box.setPadding(4, 4, 4, 4)
-            box.elevation = 20f
 
-            // ---- PANEL (bubble tap pe khulta hai, 5s baad khud band) ----
-            val panel = LinearLayout(this)
-            panel.orientation = LinearLayout.VERTICAL
-            panel.setPadding(6, 6, 6, 6)
-            panel.background = bg3d(0xFF263238.toInt())
-            panelBox = panel
+            val BOX = dp(260)
+            val box = FrameLayout(this)
+            box.clipChildren = false
+            box.clipToPadding = false
+            overlayView = box
 
+            // bada dark circle (menu khulne pe dikhta hai) - reference image jaisa
+            val bgc = View(this)
+            bgc.background = bgCircle(0xE6263238.toInt())
+            menuBg = bgc
+            val bgLp = FrameLayout.LayoutParams(dp(215), dp(215))
+            bgLp.gravity = Gravity.CENTER
+            box.addView(bgc, bgLp)
+
+            // debug text - bubble ke upar
             val dt = TextView(this)
             dt.textSize = 9f
-            dt.maxLines = 2
+            dt.maxLines = 1
             dt.setTextColor(0xFFFFFFFF.toInt())
             dt.text = "AutoReply"
-            dt.setPadding(14, 6, 14, 6)
+            dt.setPadding(10, 4, 10, 4)
             dt.setOnLongClickListener {
                 val txt: String = ObserverLog.dump(this)
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -262,65 +262,65 @@ class AutoAccessibilityService : AccessibilityService() {
                 true
             }
             debugText = dt
-            panel.addView(dt)
+            val dtLp = FrameLayout.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT
+            )
+            dtLp.gravity = Gravity.CENTER
+            dtLp.topMargin = -dp(78)
+            box.addView(dt, dtLp)
 
-            val rowBtns = LinearLayout(this)
-            rowBtns.orientation = LinearLayout.HORIZONTAL
-
-            val pb: Button = makeOverlayButton("OFF", 0xFFC62828.toInt())
-            pauseBtn = pb
-            attachDragAndClick(pb) {
-                showPanel()
-                if (queueActive) stopQueue() else startQueue()
-            }
-            rowBtns.addView(pb)
-
-            val recB: Button = makeOverlayButton("REC", 0xFF6A1B9A.toInt())
-            attachDragAndClick(recB) {
-                showPanel()
-                toggleRec()
-            }
-            rowBtns.addView(recB)
-
-            val playB: Button = makeOverlayButton("PLAY", 0xFF2E7D32.toInt())
-            attachDragAndClick(playB) {
-                showPanel()
-                togglePlay()
-            }
-            rowBtns.addView(playB)
-
-            panel.addView(rowBtns)
-
-            // EXIT: sab band + panel hide (bubble rehta hai)
-            val exitB: Button = makeOverlayButton("X", 0xFF455A64.toInt())
-            attachDragAndClick(exitB) {
-                stopQueue()
-                hidePanel()
-            }
-            panel.addView(exitB)
-
-            panel.visibility = View.GONE
-            box.addView(panel)
-
-            // ---- BUBBLE (hamesha dikhta hai) ----
+            // ---- BUBBLE (bich mein, hamesha dikhta hai) ----
             val bub = TextView(this)
             bub.text = "AI"
-            bub.textSize = 14f
+            bub.textSize = 15f
             bub.setTextColor(0xFFFFFFFF.toInt())
             bub.gravity = Gravity.CENTER
-            val bsize = dp(44)
-            bub.layoutParams = LinearLayout.LayoutParams(bsize, bsize)
-            bub.background = bgCircle(0xFF00695C.toInt())
             bub.elevation = 18f
+            bub.background = bgCircle(0xFF00695C.toInt())
             bubbleView = bub
             attachDragAndClick(bub) {
-                if (panelVisible) hidePanel() else showPanel()
+                if (menuVisible) hideMenu() else showMenu()
             }
-            box.addView(bub)
+            val bubLp = FrameLayout.LayoutParams(dp(48), dp(48))
+            bubLp.gravity = Gravity.CENTER
+            box.addView(bub, bubLp)
+
+            // ---- ARC BUTTONS (reference image wali arc) ----
+            val cx: Int = BOX / 2
+            val cy: Int = BOX / 2
+            val R: Int = dp(88)
+            val BSIZE = dp(40)
+
+            fun arcBtn(text: String, color: Int, angleDeg: Double, action: () -> Unit): Button {
+                val b = makeMenuButton(text, color)
+                b.setOnClickListener {
+                    showMenu()
+                    action()
+                }
+                menuButtons.add(b)
+                val rad = Math.toRadians(angleDeg)
+                val lp = FrameLayout.LayoutParams(BSIZE, BSIZE)
+                lp.leftMargin = cx + (R * Math.cos(rad)).toInt() - BSIZE / 2
+                lp.topMargin = cy + (R * Math.sin(rad)).toInt() - BSIZE / 2
+                b.visibility = View.GONE
+                box.addView(b, lp)
+                return b
+            }
+
+            pauseBtn = arcBtn("OFF", 0xFFC62828.toInt(), 200.0) {
+                if (queueActive) stopQueue() else startQueue()
+            }
+            arcBtn("REC", 0xFF6A1B9A.toInt(), 245.0) { toggleRec() }
+            arcBtn("PLAY", 0xFF2E7D32.toInt(), 290.0) { togglePlay() }
+            arcBtn("X", 0xFF455A64.toInt(), 335.0) {
+                stopQueue()
+                hideMenu()
+            }
 
             val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                BOX,
+                BOX,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
@@ -328,7 +328,6 @@ class AutoAccessibilityService : AccessibilityService() {
             params.gravity = Gravity.TOP or Gravity.END
             params.x = 10
             params.y = 250
-            overlayView = box
             wm?.addView(box, params)
         } catch (e: Exception) { }
     }
@@ -341,10 +340,11 @@ class AutoAccessibilityService : AccessibilityService() {
         overlayView = null
         debugText = null
         pauseBtn = null
-        panelBox = null
+        menuBg = null
         bubbleView = null
-        panelVisible = false
-        panelHandler.removeCallbacks(panelHideRunnable)
+        menuButtons.clear()
+        menuVisible = false
+        menuHandler.removeCallbacks(menuHideRunnable)
     }
 
     private fun updatePauseBtn() {
@@ -356,50 +356,6 @@ class AutoAccessibilityService : AccessibilityService() {
             b.text = "OFF"
             b.background = bgCircle(0xFFC62828.toInt())
         }
-    }
-
-    private fun toggleRec() {
-        val r = recorder ?: return
-        val pkg: String = Prefs.queuePkg(this)
-        if (r.isRecording) {
-            val n: Int = r.stopRecording("m1")
-            dbg("Saved m1 (" + n + ")")
-        } else {
-            r.startRecording(pkg)
-            dbg("REC...")
-        }
-    }
-
-    private fun togglePlay() {
-        val r = recorder ?: return
-        if (r.isPlaying) {
-            r.stopPlay()
-            dbg("Stop")
-            return
-        }
-        val pkg: String = Prefs.queuePkg(this)
-        r.play(pkg, "m1") { ok ->
-            dbg(if (ok) "Done" else "REC pehle karo")
-        }
-    }
-
-    private fun isInChat(root: AccessibilityNodeInfo): Boolean {
-        val field: AccessibilityNodeInfo = findInput(root) ?: return false
-        val r = Rect()
-        field.getBoundsInScreen(r)
-        val dh: Int = resources.displayMetrics.heightPixels
-        return r.top > dh * 0.55
-    }
-
-    private fun isOnList(root: AccessibilityNodeInfo): Boolean {
-        return findNodeWithText(root, "most chatted", 0) != null ||
-                findNodeWithText(root, "unread", 0) != null
-    }
-
-    private fun isProfile(root: AccessibilityNodeInfo): Boolean {
-        return findNodeWithText(root, "private album", 0) != null ||
-                findNodeWithText(root, "add voice intro", 0) != null ||
-                findNodeWithText(root, "profile tags", 0) != null
     }
 
     // ============ BLOCK 3: BRAIN (QUEUE <-> NAQSH) ============
@@ -533,7 +489,7 @@ class AutoAccessibilityService : AccessibilityService() {
         wakeLock = wl
         showOverlay()
         updatePauseBtn()
-        showPanel()
+        showMenu()
         dbg("Queue ON")
         ObserverLog.log(this, "QUEUE ON pkg=" + Prefs.queuePkg(this))
         scheduleProcess(500)
