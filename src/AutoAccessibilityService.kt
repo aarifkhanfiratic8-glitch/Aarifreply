@@ -56,6 +56,11 @@ class AutoAccessibilityService : AccessibilityService() {
     private var ourLastCount: Int = 0
     private var sentInChat: Int = 0
 
+    // [BRAIN] Queue (pending pehle) <-> Observe (naqsh) switcher
+    private var observeMode: Boolean = false
+    private var idleSince: Long = 0L
+    private val OBSERVE_IDLE_MS: Long = 20000L
+
     override fun onServiceConnected() {
         instance = this
         recorder = MacroRecorder(this)
@@ -293,10 +298,10 @@ class AutoAccessibilityService : AccessibilityService() {
         val pkg: String = Prefs.queuePkg(this)
         if (r.isRecording) {
             val n: Int = r.stopRecording("m1")
-            dbg("Macro saved: m1 (" + n + " steps)")
+            dbg("Saved m1 (" + n + ")")
         } else {
             r.startRecording(pkg)
-            dbg("REC ON - jo bhi karo record hoga. Dubara dabao = save")
+            dbg("REC...")
         }
     }
 
@@ -304,12 +309,12 @@ class AutoAccessibilityService : AccessibilityService() {
         val r = recorder ?: return
         if (r.isPlaying) {
             r.stopPlay()
-            dbg("Play stop")
+            dbg("Stop")
             return
         }
         val pkg: String = Prefs.queuePkg(this)
         r.play(pkg, "m1") { ok ->
-            dbg(if (ok) "Macro DONE" else "Macro m1 nahi mila - pehle REC se banao")
+            dbg(if (ok) "Done" else "REC pehle karo")
         }
     }
 
@@ -373,6 +378,11 @@ class AutoAccessibilityService : AccessibilityService() {
         if (currentPkg != pkg) {
             return
         }
+        // [BRAIN] naqsh chal raha hai -> har cycle pe check: koi pending msg to nahi?
+        if (recorder?.isPlaying == true) {
+            checkPendingDuringObserve(root)
+            return
+        }
         val leaveDialog: AccessibilityNodeInfo? =
             findNodeWithText(root, "are you sure to leave", 0)
         if (leaveDialog != null) {
@@ -414,6 +424,27 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
         if (isOnList(root)) {
+            val work2: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
+            val fresh2: List<Pair<AccessibilityNodeInfo, String>> =
+                work2.filter { !wasRecentlyHandled(it.second) }
+            if (fresh2.isEmpty()) {
+                // [WAIT] koi pending nahi -> Messages screen pe rest karo,
+                // koi Hi nahi bhejenge. 20s baad naqsh repeat.
+                if (observeMode) return
+                if (idleSince == 0L) idleSince = System.currentTimeMillis()
+                val leftSec: Long =
+                    (OBSERVE_IDLE_MS - (System.currentTimeMillis() - idleSince)) / 1000L
+                if (leftSec <= 0L) {
+                    idleSince = 0L
+                    startObserve()
+                } else {
+                    dbg("WAIT " + leftSec + "s")
+                }
+                return
+            }
+            // PENDING MILA -> queue mode (naqsh ruk jayega)
+            idleSince = 0L
+            observeMode = false
             handleList(root)
             return
         }
@@ -448,12 +479,16 @@ class AutoAccessibilityService : AccessibilityService() {
         expectingChat = false
         sending = false
         analyzing = false
+        observeMode = false
+        idleSince = 0L
+        recorder?.stopPlay()
+        recorder?.let { if (it.isRecording) it.stopRecording("m1") }
         qHandler.removeCallbacksAndMessages(null)
         handler.removeCallbacksAndMessages(null)
         try { wakeLock?.release() } catch (_: Exception) { }
         wakeLock = null
         updatePauseBtn()
-        dbg("Queue OFF - sirf data save")
+        dbg("OFF")
         ObserverLog.log(this, "QUEUE OFF")
     }
 
@@ -505,6 +540,57 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     // ============ BLOCK 4: CHAT ENGINE (scrape + reply) ============
+    // [BRAIN] OBSERVE mode: tumhara recorded naqsh chalao. Gate har step pe
+    // check karta hai: msg aaya / app chhodi / OFF -> turant ruk.
+    private fun startObserve() {
+        val r = recorder ?: return
+        if (r.isPlaying) return
+        observeMode = true
+        dbg("OBSERVE on")
+        ObserverLog.log(this, "OBSERVE START")
+        r.play(Prefs.queuePkg(this), "m1", gate = { observeGate() }) { ok ->
+            observeMode = false
+            dbg(if (ok) "OBSERVE pura" else "OBSERVE ruka")
+            scheduleProcess(700)
+        }
+    }
+
+    private fun observeGate(): Boolean {
+        if (!queueActive) return false
+        val root = rootInActiveWindow
+        if (root != null) {
+            // target app chhod diya -> ruk jao
+            if (root.packageName?.toString() != Prefs.queuePkg(this)) return false
+            // Messages list pe pending mila -> ruk jao
+            checkPendingDuringObserve(root)
+            if (recorderStoppedByGate()) return false
+        }
+        // root null = screen transition, allow
+        return true
+    }
+
+    private fun recorderStoppedByGate(): Boolean {
+        return observeMode && (recorder?.isPlaying != true)
+    }
+
+    private fun checkPendingDuringObserve(root: AccessibilityNodeInfo) {
+        if (!queueActive) return
+        if (recorder?.isPlaying != true) return
+        if (!isOnList(root)) return
+        val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
+        val fresh: List<Pair<AccessibilityNodeInfo, String>> =
+            work.filter { !wasRecentlyHandled(it.second) }
+        if (fresh.isNotEmpty()) {
+            // MSG PENDING! naqsh turant band, queue shuru
+            recorder?.stopPlay()
+            observeMode = false
+            idleSince = 0L
+            dbg("MSG! queue on")
+            ObserverLog.log(this, "OBSERVE -> QUEUE (msg aaya)")
+            scheduleProcess(400)
+        }
+    }
+
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
             dbg("Chat loading...")
@@ -768,6 +854,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun doSetText() {
+        if (!queueActive) { sending = false; return }
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
         if (field == null) {
@@ -845,6 +932,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun sendFlow() {
+        if (!queueActive) { sending = false; return }
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         val field: AccessibilityNodeInfo? = if (root == null) null else findInput(root)
         if (root == null || field == null) {
@@ -896,6 +984,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun onSent() {
         sending = false
         handler.postDelayed({
+            if (!queueActive) return@postDelayed
             try {
                 val root: AccessibilityNodeInfo = rootInActiveWindow ?: run {
                     goNextOrBack()
@@ -921,6 +1010,7 @@ class AutoAccessibilityService : AccessibilityService() {
     }
 
     private fun goNextOrBack() {
+        if (!queueActive) return
         val root: AccessibilityNodeInfo? = rootInActiveWindow
         if (root != null) {
             val node: AccessibilityNodeInfo? = findNodeWithText(root, "next unread", 0)
@@ -1131,6 +1221,10 @@ class AutoAccessibilityService : AccessibilityService() {
         recorder?.onEvent(event)
 
         if (!queueActive) return
+        if (recorder?.isPlaying == true && observeMode) {
+            val r2 = rootInActiveWindow
+            if (r2 != null) checkPendingDuringObserve(r2)
+        }
         if (sending || analyzing) return
         scheduleProcess(600)
     }
