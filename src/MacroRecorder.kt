@@ -13,13 +13,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 
-// [MACRO RECORDER] — v2 (no companion object, phone-paste safe)
-// REC ON karo -> tum Toki/WhatsApp pe jo bhi karo (click, type, wait) record hoga.
-// REC dubara dabao -> macro "m1" save ho jayega (app ke hisaab se alag).
-// PLAY dabao -> app wahi steps khud repeat karega.
-//
-// IMPORTANT: Record karte waqt queue (ON/OFF) OFF rakho,
-// warna bot ke clicks bhi record ho jayenge.
+// [MACRO RECORDER v3]
+// REC ON karo -> jo bhi karo record hoga. REC dubara = save "m1".
+// PLAY = "m1" chalao. Macro US APP se juda hota hai jisme record kiya.
+// DHYAN: App uninstall karne se SAB macros delete ho jate hain!
+//        Nayi APK ko hamesha bina uninstall kiye install karo (update).
 class MacroRecorder(private val service: AccessibilityService) {
 
     private val PREFS = "macros"
@@ -50,9 +48,14 @@ class MacroRecorder(private val service: AccessibilityService) {
         if (count > 0 && name.isNotBlank()) {
             try {
                 val sp = service.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                sp.edit().putString("macro_" + currentPkg + "_" + name, steps.toString()).apply()
-                ObserverLog.log(service, "REC SAVE " + name + " steps=" + count + " pkg=" + currentPkg)
-            } catch (e: Exception) { }
+                val key = "macro_" + currentPkg + "_" + name
+                sp.edit().putString(key, steps.toString()).commit()
+                ObserverLog.log(service, "REC SAVE key=" + key + " steps=" + count)
+            } catch (e: Exception) {
+                ObserverLog.log(service, "REC SAVE ERROR: " + e.message)
+            }
+        } else {
+            ObserverLog.log(service, "REC SAVE SKIP (steps=0 ya naam khali)")
         }
         return count
     }
@@ -111,16 +114,33 @@ class MacroRecorder(private val service: AccessibilityService) {
 
     fun play(pkg: String, name: String, onDone: ((Boolean) -> Unit)? = null) {
         if (isPlaying) return
-        val raw = try {
-            val sp = service.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            sp.getString("macro_" + pkg + "_" + name, "") ?: ""
-        } catch (e: Exception) { "" }
+        val sp = service.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+        // 1) exact key dhundo: macro_<pkg>_<name>
+        val exactKey = "macro_" + pkg + "_" + name
+        var raw: String = sp.getString(exactKey, "") ?: ""
+
+        // 2) fallback: kisi bhi app mein saved macro_<*>_<name> dhundo
         if (raw.isBlank()) {
-            ObserverLog.log(service, "PLAY macro nahi mila: " + name + " pkg=" + pkg)
+            try {
+                for (k in sp.all.keys) {
+                    if (k.endsWith("_" + name) && k.startsWith("macro_")) {
+                        raw = sp.getString(k, "") ?: ""
+                        ObserverLog.log(service, "PLAY fallback key=" + k)
+                        if (raw.isNotBlank()) break
+                    }
+                }
+            } catch (e: Exception) { }
+        }
+
+        if (raw.isBlank()) {
+            // detail ke saath log karo taaki pata chale kya saved hai
+            val savedKeys = sp.all.keys.filter { it.startsWith("macro_") }.joinToString(", ")
+            ObserverLog.log(service, "PLAY NOT FOUND pkg=" + pkg + " name=" + name + " | saved=[" + savedKeys + "]")
             onDone?.invoke(false)
             return
         }
-        ObserverLog.log(service, "PLAY START " + name + " pkg=" + pkg)
+        ObserverLog.log(service, "PLAY START " + name + " pkg=" + pkg + " len=" + raw.length)
         isPlaying = true
         runSteps(JSONArray(raw), 0, onDone)
     }
