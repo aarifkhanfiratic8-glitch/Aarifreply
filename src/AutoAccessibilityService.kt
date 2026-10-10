@@ -43,9 +43,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
     private var wrongPkgCount: Int = 0
-    private val handledAt: HashMap<String, Long> = HashMap()
-    private val greetedAt: HashMap<String, Long> = HashMap()
+    private val lockAt: HashMap<String, Long> = HashMap()
     private val ourSent: HashMap<String, MutableList<String>> = HashMap()
+    private val LOCK_MS: Long = 20 * 60 * 1000L
+    private val MAX_SENDS: Int = 1
 
     @Volatile private var sending: Boolean = false
     @Volatile private var analyzing: Boolean = false
@@ -58,11 +59,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private var sentInChat: Int = 0
     private var profileBackCount: Int = 0
 
-    // BRAIN: Queue <-> Observe switcher
+    // BRAIN: WAIT counter (auto-observe HATA DIYA)
     private var observeMode: Boolean = false
     private var idleSince: Long = 0L
     private val OBSERVE_IDLE_MS: Long = 20000L
-    private val GREET_LOCK_MS: Long = 10 * 60 * 1000L
 
     override fun onServiceConnected() {
         instance = this
@@ -96,14 +96,10 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun wasRecentlyHandled(name: String): Boolean {
-        val t: Long = handledAt[name] ?: return false
-        return System.currentTimeMillis() - t < 180000L
-    }
-
-    private fun greetedRecently(name: String): Boolean {
-        val t: Long = greetedAt[name] ?: return false
-        return System.currentTimeMillis() - t < GREET_LOCK_MS
+    // chat lock: reply ke baad 20 min tak NA khule (jab tak unka badge-dot msg na aaye)
+    private fun chatLocked(name: String): Boolean {
+        val t: Long = lockAt[name] ?: return false
+        return System.currentTimeMillis() - t < LOCK_MS
     }
 
     // [SELF-FIX] jo msg humne khud bheja tha, wo scrape mein "unka" na bane
@@ -431,23 +427,23 @@ class AutoAccessibilityService : AccessibilityService() {
         }
 
         if (isOnList(root)) {
-            val work2: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
-            val fresh2: List<Pair<AccessibilityNodeInfo, String>> =
-                work2.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
+            val work2: List<WorkRow> = findWorkRows(root)
+            val badgeSet: HashSet<String> =
+                work2.filter { it.isBadge }.map { it.name }.toHashSet()
+            // [LOCK] reply ke baad chat band — SIRF badge (unka naya msg) aane pe khule
+            val fresh2: List<WorkRow> =
+                work2.filter { badgeSet.contains(it.name) || !chatLocked(it.name) }
             if (fresh2.isNotEmpty()) {
                 idleSince = 0L
-                observeMode = false
-                handleList(root)
+                openRow(fresh2[0])
                 return
             }
-            // koi pending nahi -> WAIT -> 20s -> OBSERVE
-            if (observeMode) return
+            // koi pending nahi -> WAIT (auto-observe nahi, koi movement nahi)
             if (idleSince == 0L) idleSince = System.currentTimeMillis()
             val leftSec: Long =
                 (OBSERVE_IDLE_MS - (System.currentTimeMillis() - idleSince)) / 1000L
             if (leftSec <= 0L) {
-                idleSince = 0L
-                startObserve()
+                idleSince = System.currentTimeMillis()
             } else {
                 dbg("WAIT " + leftSec + "s")
             }
@@ -500,22 +496,16 @@ class AutoAccessibilityService : AccessibilityService() {
         ObserverLog.log(this, "QUEUE OFF")
     }
 
-    private fun handleList(root: AccessibilityNodeInfo) {
-        val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
-        val fresh: List<Pair<AccessibilityNodeInfo, String>> =
-            work.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
-        dbg("List: " + work.size + "/" + fresh.size)
-        ObserverLog.log(this, "LIST rows=" + work.size + " fresh=" + fresh.size)
-        if (fresh.isEmpty()) return
-        val pick: Pair<AccessibilityNodeInfo, String> = fresh[0]
-        lastSender = pick.second
-        handledAt[pick.second] = System.currentTimeMillis()
+    private fun openRow(pick: WorkRow) {
+        lastSender = pick.name
+        lockAt[pick.name] = System.currentTimeMillis()
         sending = false
         analyzing = false
         ourLastCount = 0
         sentInChat = 0
-        dbg("Open: " + pick.second)
-        clickRowTextArea(pick.first, pick.second)
+        dbg("Open: " + pick.name)
+        ObserverLog.log(this, "OPEN " + pick.name + " badge=" + pick.isBadge)
+        clickRowTextArea(pick.node, pick.name)
         expectingChat = true
     }
 
@@ -572,9 +562,11 @@ class AutoAccessibilityService : AccessibilityService() {
         if (!queueActive) return
         if (recorder?.isPlaying != true) return
         if (!isOnList(root)) return
-        val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
-        val fresh: List<Pair<AccessibilityNodeInfo, String>> =
-            work.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
+        val work: List<WorkRow> = findWorkRows(root)
+        val badgeSet: HashSet<String> =
+            work.filter { it.isBadge }.map { it.name }.toHashSet()
+        val fresh: List<WorkRow> =
+            work.filter { badgeSet.contains(it.name) || !chatLocked(it.name) }
         if (fresh.isNotEmpty()) {
             recorder?.stopPlay()
             observeMode = false
@@ -595,7 +587,7 @@ class AutoAccessibilityService : AccessibilityService() {
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         if (msgs.isEmpty()) {
-            if (wasRecentlyHandled(key) || greetedRecently(key)) {
+            if (chatLocked(key)) {
                 dbg("Empty -> next")
                 goNextOrBack()
             } else {
@@ -604,8 +596,9 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             return
         }
-        if (sentInChat >= 3) {
-            dbg("Cap 3 -> next")
+        // [1-MSG] sirf EK message per chat visit
+        if (sentInChat >= MAX_SENDS) {
+            dbg("Sent 1 -> next")
             goNextOrBack()
             return
         }
@@ -639,7 +632,7 @@ class AutoAccessibilityService : AccessibilityService() {
             msgs.any { !it.second && !isOurOwnText(key, it.first) }
         if (!realFromThem) {
             // FRESH CHAT: unhone kabhi real msg nahi bheja -> sirf 1 greeting
-            if (greetedRecently(key) || sentInChat >= 1) {
+            if (chatLocked(key) || sentInChat >= MAX_SENDS) {
                 markAnalyzed(key)
                 goNextOrBack()
                 return
@@ -662,7 +655,7 @@ class AutoAccessibilityService : AccessibilityService() {
             val b: List<String> = listOf("hii", "hello ji", "heyy", "namaste ji", "hii yrr")
             b[(Math.random() * b.size).toInt()]
         }
-        greetedAt[key] = System.currentTimeMillis()
+        lockAt[key] = System.currentTimeMillis()
         markAnalyzed(key)
         dbg("Greet: " + text)
         ObserverLog.log(this, "GREET " + key + " -> " + text)
@@ -697,7 +690,19 @@ class AutoAccessibilityService : AccessibilityService() {
         val out = ArrayList<Pair<String, Boolean>>()
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
-        collectMessages(root, out, dw, dh, 0)
+        // input field ki top position = message zone ki neeche ki boundary
+        var inputTop: Int = dh
+        try {
+            val f: AccessibilityNodeInfo? = findInput(root)
+            if (f != null) {
+                val fr = Rect()
+                f.getBoundsInScreen(fr)
+                if (!fr.isEmpty) inputTop = fr.top
+            }
+        } catch (e: Exception) { }
+        // input NA mila -> chat nahi (kuch aur screen hai)
+        if (inputTop >= dh) return emptyList()
+        collectMessages(root, out, dw, dh, inputTop, 0)
         val chatName: String = try { readChatName(root).trim().lowercase() } catch (e: Exception) { "" }
         return out.takeLast(12).filter { m ->
             val t: String = m.first.trim().lowercase()
@@ -719,6 +724,7 @@ class AutoAccessibilityService : AccessibilityService() {
         out: ArrayList<Pair<String, Boolean>>,
         dw: Int,
         dh: Int,
+        inputTop: Int,
         depth: Int
     ) {
         if (depth > 16) return
@@ -727,21 +733,28 @@ class AutoAccessibilityService : AccessibilityService() {
             if (t != null && t.isNotEmpty() && !hasTextChild(node)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
-                val cy: Int = (r.top + r.bottom) / 2
-                val cx: Int = (r.left + r.right) / 2
-                if (cy > dh * 0.28 && !looksLikeMeta(t)) {
-                    out.add(Pair(t, cx > dw / 2))
+                if (!r.isEmpty) {
+                    val cy: Int = (r.top + r.bottom) / 2
+                    val cx: Int = (r.left + r.right) / 2
+                    // [FIX-CHIPS] input field ke 64dp andar ki HAR text = UI chrome
+                    // (quick-reply chips, suggestion rows, hint) -> message NAHI
+                    val tooCloseToInput: Boolean = r.bottom > inputTop - dp(64)
+                    if (cy > dh * 0.28 && !tooCloseToInput && !looksLikeMeta(t)) {
+                        out.add(Pair(t, cx > dw / 2))
+                    }
                 }
             }
         }
         for (i in 0 until node.childCount) {
             val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) collectMessages(c, out, dw, dh, depth + 1)
+            if (c != null) collectMessages(c, out, dw, dh, inputTop, depth + 1)
         }
     }
 
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
+        // quote preview: "khushí: sach batao na mujhe" -> ye message nahi
+        if (Regex("^.{2,22}: .+").containsMatchIn(t)) return true
         val low: String = t.lowercase()
         if (t.matches(Regex("^\\d{1,3}$"))) return true
         if (low.matches(Regex("^vip\\d*$"))) return true
@@ -1020,7 +1033,7 @@ class AutoAccessibilityService : AccessibilityService() {
                     goNextOrBack()
                     return@postDelayed
                 }
-                if (sentInChat >= 3) {
+                if (sentInChat >= MAX_SENDS) {
                     goNextOrBack()
                     return@postDelayed
                 }
@@ -1120,19 +1133,25 @@ class AutoAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findWorkRows(
-        root: AccessibilityNodeInfo
-    ): List<Pair<AccessibilityNodeInfo, String>> {
+    private class WorkRow(
+        var node: AccessibilityNodeInfo,
+        var name: String,
+        var top: Int,
+        var isBadge: Boolean
+    )
+
+    // sirf badge (unread dot/number) = "unka naya msg" guarantee
+    private fun findWorkRows(root: AccessibilityNodeInfo): List<WorkRow> {
         val dw: Int = resources.displayMetrics.widthPixels
-        val found = ArrayList<Triple<AccessibilityNodeInfo, String, Int>>()
+        val found = ArrayList<WorkRow>()
         findSignalsIn(root, dw, found, 0)
-        found.sortBy { it.third }
-        val out = ArrayList<Pair<AccessibilityNodeInfo, String>>()
+        found.sortBy { it.top }
+        val out = ArrayList<WorkRow>()
         val seen = HashSet<String>()
         for (t in found) {
-            if (t.second !in seen) {
-                seen.add(t.second)
-                out.add(Pair(t.first, t.second))
+            if (t.name !in seen) {
+                seen.add(t.name)
+                out.add(t)
             }
         }
         return out
@@ -1141,7 +1160,7 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun findSignalsIn(
         node: AccessibilityNodeInfo,
         dw: Int,
-        out: MutableList<Triple<AccessibilityNodeInfo, String, Int>>,
+        out: MutableList<WorkRow>,
         depth: Int
     ) {
         if (depth > 18) return
@@ -1152,9 +1171,9 @@ class AutoAccessibilityService : AccessibilityService() {
                             else if (cd != null && cd.isNotEmpty()) cd
                             else ""
             if (s.isNotEmpty()) {
-                val isBadge: Boolean = s.matches(Regex("^\\d{1,2}$"))
+                val isBadge: Boolean = s.matches(Regex("^\d{1,2}$"))
                 val isFreshTime: Boolean =
-                    s.matches(Regex("^\\d{1,2}:\\d{2}$")) && isNow(s)
+                    s.matches(Regex("^\d{1,2}:\d{2}$")) && isNow(s)
                 if (isBadge || isFreshTime) {
                     val r = Rect()
                     node.getBoundsInScreen(r)
@@ -1169,15 +1188,15 @@ class AutoAccessibilityService : AccessibilityService() {
                                     !x.contains(":") &&
                                     !x.startsWith("[Match]") &&
                                     !x.startsWith("[Online]") &&
-                                    !x.matches(Regex("^\\d{1,2}(:\\d{2})?.*")) &&
+                                    !x.matches(Regex("^\d{1,2}(:\d{2})?.*")) &&
                                     !isSystemRow(x)
                                 ) {
                                     name = x
                                     break
                                 }
                             }
-                            if (!isSystemRow(name) && out.none { it.second == name }) {
-                                out.add(Triple(row, name, r.top))
+                            if (!isSystemRow(name) && out.none { it.name == name }) {
+                                out.add(WorkRow(row, name, r.top, isBadge))
                             }
                         }
                     }
