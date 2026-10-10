@@ -61,8 +61,6 @@ class AutoAccessibilityService : AccessibilityService() {
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
     private var sentInChat: Int = 0
-    private var emptyTries: Int = 0
-    private var openedWithBadge: Boolean = false
     private var profileBackCount: Int = 0
 
     // BRAIN: 1 min WAIT -> naqsh auto-play (msg aaya -> turant queue)
@@ -588,8 +586,6 @@ class AutoAccessibilityService : AccessibilityService() {
         analyzing = false
         ourLastCount = 0
         sentInChat = 0
-        emptyTries = 0
-        openedWithBadge = pick.isBadge
         dbg("Open: " + pick.name)
         ObserverLog.log(this, "OPEN " + pick.name + " badge=" + pick.isBadge)
         clickRowTextArea(pick.node, pick.name)
@@ -667,33 +663,30 @@ class AutoAccessibilityService : AccessibilityService() {
     // ============ BLOCK 4: CHAT ENGINE ============
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
-            dbg("Loading...")
+            dbg("Loading")
             scheduleProcess(1200)
             return
         }
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         ObserverLog.log(this, "CHAT " + key + " msgs=" + msgs.size +
-            " last=" + (msgs.lastOrNull()?.first ?: "-").take(20) +
-            " side=" + (if (msgs.lastOrNull()?.second == true) "me" else "them"))
+            " last=" + (msgs.lastOrNull()?.first ?: "-").take(20))
 
-        // [RULE] pehle AAKHRI UNKA message dhundo (hamara msg neeche ho to bhi)
+        // [SIMPLE RULE] red dot wali chat khuli = unka msg aaya hai
+        // -> sirf usi ka jawab do. Unka msg nahi = seedha back, kuch mat bhejo.
         val lastTheirs: Pair<String, Boolean>? = msgs.lastOrNull {
             !it.second && !isOurOwnText(key, it.first)
         }
 
-        // 1 message ho chuka is visit mein -> next
         if (sentInChat >= MAX_SENDS) {
             dbg("Sent 1 -> next")
             goNextOrBack()
             return
         }
 
-        // unka msg mila -> TURANT reply (koi lock nahi, koi rukawat nahi)
         if (lastTheirs != null) {
             if (analyzing) return
             analyzing = true
-            ourLastCount = 0
             markAnalyzed(key)
             dbg("Reply -> " + lastTheirs.first.take(15))
             ObserverLog.log(this, "CHAT their: " + lastTheirs.first.take(30))
@@ -701,45 +694,27 @@ class AutoAccessibilityService : AccessibilityService() {
             return
         }
 
-        // unka koi real msg nahi mila
-        if (msgs.isEmpty()) {
-            if (chatLocked(key)) {
-                dbg("Empty -> next")
-                goNextOrBack()
-                return
-            }
-            emptyTries++
-            val maxTries: Int = if (openedWithBadge) 5 else 3
-            if (emptyTries < maxTries) {
-                dbg("Loading " + emptyTries + "/" + maxTries)
-                scheduleProcess(2500)
-                return
-            }
-            // kuch nahi mila -> fresh chat = 1 greeting
-            greetOnce(key)
-            return
-        }
-
-        // sirf HAMARE msgs dikhe aur kabhi reply nahi diya is bande ko
+        // [RULE] red dot wali chat hai par andar TEXT msg nahi mila
+        // (photo/voice tha) -> SKIP NAHI karna. Khud hi/hello bhej do.
         if (!chatLocked(key)) {
-            greetOnce(key)
+            greetFirst(key)
             return
         }
-        markAnalyzed(key)
+        dbg("No msg from them -> back")
         goNextOrBack()
     }
 
-    private fun greetOnce(key: String) {
+    // Red dot chat mein msg na mile -> pehla msg hum bhejenge (skip nahi)
+    private fun greetFirst(key: String) {
         val sp = getSharedPreferences("intro_flags", Context.MODE_PRIVATE)
         val done: Boolean = sp.getBoolean("i_" + key.lowercase(), false)
         val text: String = if (!done) {
             sp.edit().putBoolean("i_" + key.lowercase(), true).apply()
             "aur batao, kaise ho?"
         } else {
-            val b: List<String> = listOf("hii", "hello ji", "heyy", "namaste ji", "hii yrr")
+            val b: List<String> = listOf("hii", "hello ji", "heyy", "hi", "namaste ji", "hii yrr")
             b[(Math.random() * b.size).toInt()]
         }
-        lockAt[key] = System.currentTimeMillis()
         markAnalyzed(key)
         dbg("Greet: " + text)
         ObserverLog.log(this, "GREET " + key + " -> " + text)
