@@ -356,6 +356,50 @@ class AutoAccessibilityService : AccessibilityService() {
             b.background = bgCircle(0xFFC62828.toInt())
         }
     }
+    private fun toggleRec() {
+        val r = recorder ?: return
+        val pkg: String = Prefs.queuePkg(this)
+        if (r.isRecording) {
+            val n: Int = r.stopRecording("m1")
+            dbg("Saved m1 (" + n + ")")
+        } else {
+            r.startRecording(pkg)
+            dbg("REC...")
+        }
+    }
+
+    private fun togglePlay() {
+        val r = recorder ?: return
+        if (r.isPlaying) {
+            r.stopPlay()
+            dbg("Stop")
+            return
+        }
+        val pkg: String = Prefs.queuePkg(this)
+        r.play(pkg, "m1") { ok ->
+            dbg(if (ok) "Done" else "REC pehle karo")
+        }
+    }
+
+    private fun isInChat(root: AccessibilityNodeInfo): Boolean {
+        val field: AccessibilityNodeInfo = findInput(root) ?: return false
+        val r = Rect()
+        field.getBoundsInScreen(r)
+        val dh: Int = resources.displayMetrics.heightPixels
+        return r.top > dh * 0.55
+    }
+
+    private fun isOnList(root: AccessibilityNodeInfo): Boolean {
+        return findNodeWithText(root, "most chatted", 0) != null ||
+                findNodeWithText(root, "unread", 0) != null
+    }
+
+    private fun isProfile(root: AccessibilityNodeInfo): Boolean {
+        return findNodeWithText(root, "private album", 0) != null ||
+                findNodeWithText(root, "add voice intro", 0) != null ||
+                findNodeWithText(root, "profile tags", 0) != null
+    }
+
 
     // ============ BLOCK 3: BRAIN (QUEUE <-> NAQSH) ============
     private val heartbeatRunnable: Runnable = object : Runnable {
