@@ -5,7 +5,6 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.graphics.Path
 import android.graphics.Rect
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
@@ -13,10 +12,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 
-// [MACRO RECORDER v4]
-// REC ON -> jo bhi karo record hoga (SIRF target app mein). REC dubara = save "m1" (ek hi baar).
-// PLAY = naqsh chalao. Observe mode mein brain khud chalata hai, har step pe
-// "gate" check: naya msg aaya / app chhod diya / OFF dabaya -> turant ruk jayega.
+// [MACRO RECORDER v5]
+// REC ON -> sirf TAPS record hote hain (type/typing KABHI record nahi hota).
+// Replies hamesha Queue+Memory se aate hain — naqsh sirf "rasta" hai.
+// PLAY = naqsh chalao. Observe mode mein har step pe gate check:
+// naya msg / app chhodi / OFF -> turant ruk.
 class MacroRecorder(private val service: AccessibilityService) {
 
     private val PREFS = "macros"
@@ -48,7 +48,6 @@ class MacroRecorder(private val service: AccessibilityService) {
             try {
                 val sp = service.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val e = sp.edit()
-                // teen jagah save: pkg key + plain name + last used pkg
                 e.putString("macro_" + currentPkg + "_" + name, steps.toString())
                 e.putString("macro_" + name, steps.toString())
                 e.putString("macro_last_pkg", currentPkg)
@@ -74,7 +73,7 @@ class MacroRecorder(private val service: AccessibilityService) {
         if (!isRecording) return
         if (isPlaying) return
         if (event.packageName?.toString() == service.packageName) return
-        // SIRF target app ke events record hote hain (service pehle hi filter kar deta hai)
+        // SIRF target app ke events yahan tak pahunchte hain (service filter)
 
         val src: AccessibilityNodeInfo = event.source ?: return
         val now = System.currentTimeMillis()
@@ -98,25 +97,12 @@ class MacroRecorder(private val service: AccessibilityService) {
                         .put("text", src.text?.toString() ?: "")
                 )
             }
-            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
-                if (src.isEditable) {
-                    val txt = src.text?.toString() ?: return
-                    if (steps.length() > 0) {
-                        val last = steps.getJSONObject(steps.length() - 1)
-                        if (last.optString("t") == "type") {
-                            last.put("text", txt)
-                            return
-                        }
-                    }
-                    steps.put(JSONObject().put("t", "type").put("text", txt))
-                }
-            }
+            // TYPE_VIEW_TEXT_CHANGED jaan-boojh kar skip: typing naqsh mein nahi jati
         }
     }
 
     // ---------------- PLAY (interruptible) ----------------
 
-    // gate: har step se pehle poocha jayega. false = yahin ruk jao (onDone(false)).
     fun play(
         pkg: String,
         name: String,
@@ -126,17 +112,14 @@ class MacroRecorder(private val service: AccessibilityService) {
         if (isPlaying) return
         val sp = service.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-        // 1) exact key: macro_<pkg>_<name>
         var raw: String = sp.getString("macro_" + pkg + "_" + name, "") ?: ""
         var usedKey = "macro_" + pkg + "_" + name
 
-        // 2) plain key: macro_<name>
         if (raw.isBlank()) {
             raw = sp.getString("macro_" + name, "") ?: ""
             if (raw.isNotBlank()) usedKey = "macro_" + name
         }
 
-        // 3) fallback scan: koi bhi macro_*_<name>
         if (raw.isBlank()) {
             try {
                 for (k in sp.all.keys) {
@@ -172,7 +155,6 @@ class MacroRecorder(private val service: AccessibilityService) {
     ) {
         if (!isPlaying) { onDone?.invoke(false); return }
 
-        // GATE: msg aaya / app chhod diya / OFF -> yahin ruk
         if (gate != null) {
             val ok = try { gate() } catch (e: Exception) { false }
             if (!ok) {
@@ -197,10 +179,6 @@ class MacroRecorder(private val service: AccessibilityService) {
             }
             "tap" -> {
                 tapStep(s)
-                handler.postDelayed({ runSteps(arr, index + 1, gate, onDone) }, 450)
-            }
-            "type" -> {
-                typeStep(s.optString("text"))
                 handler.postDelayed({ runSteps(arr, index + 1, gate, onDone) }, 450)
             }
             else -> runSteps(arr, index + 1, gate, onDone)
@@ -237,31 +215,6 @@ class MacroRecorder(private val service: AccessibilityService) {
             val c: AccessibilityNodeInfo? = node.getChild(i)
             if (c != null) {
                 val f = findMatch(c, desc, txt, depth + 1)
-                if (f != null) return f
-            }
-        }
-        return null
-    }
-
-    private fun typeStep(text: String) {
-        try {
-            val root = service.rootInActiveWindow ?: return
-            val field = findEditable(root) ?: return
-            val args = Bundle()
-            args.putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                text
-            )
-            field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        } catch (e: Exception) { }
-    }
-
-    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isEditable) return node
-        for (i in 0 until node.childCount) {
-            val c: AccessibilityNodeInfo? = node.getChild(i)
-            if (c != null) {
-                val f = findEditable(c)
                 if (f != null) return f
             }
         }
