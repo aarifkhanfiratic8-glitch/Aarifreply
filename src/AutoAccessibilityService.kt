@@ -26,7 +26,7 @@ import kotlin.concurrent.thread
 
 class AutoAccessibilityService : AccessibilityService() {
 
-    // ============ BLOCK 1: LIFECYCLE + VARS ===========
+    // ============ BLOCK 1: LIFECYCLE + VARS ============
     companion object {
         var instance: AutoAccessibilityService? = null
         var recorder: MacroRecorder? = null
@@ -43,8 +43,9 @@ class AutoAccessibilityService : AccessibilityService() {
     private var debugText: TextView? = null
     private var pauseBtn: Button? = null
     private var wrongPkgCount: Int = 0
-    private var profileBackCount: Int = 0
     private val handledAt: HashMap<String, Long> = HashMap()
+    private val greetedAt: HashMap<String, Long> = HashMap()
+    private val ourSent: HashMap<String, MutableList<String>> = HashMap()
 
     @Volatile private var sending: Boolean = false
     @Volatile private var analyzing: Boolean = false
@@ -55,11 +56,13 @@ class AutoAccessibilityService : AccessibilityService() {
     private var openedAt: Long = 0L
     private var ourLastCount: Int = 0
     private var sentInChat: Int = 0
+    private var profileBackCount: Int = 0
 
-    // [BRAIN] Queue (pending pehle) <-> Observe (naqsh) switcher
+    // BRAIN: Queue <-> Observe switcher
     private var observeMode: Boolean = false
     private var idleSince: Long = 0L
     private val OBSERVE_IDLE_MS: Long = 20000L
+    private val GREET_LOCK_MS: Long = 10 * 60 * 1000L
 
     override fun onServiceConnected() {
         instance = this
@@ -79,7 +82,6 @@ class AutoAccessibilityService : AccessibilityService() {
         hideOverlay()
         recorder = null
         instance = null
-        ObserverLog.log(this, "SERVICE DISCONNECTED")
         return super.onUnbind(intent)
     }
 
@@ -99,7 +101,41 @@ class AutoAccessibilityService : AccessibilityService() {
         return System.currentTimeMillis() - t < 180000L
     }
 
-    // ============ BLOCK 2: OVERLAY UI (OFF/REC/PLAY + LOGS long-press) ============
+    private fun greetedRecently(name: String): Boolean {
+        val t: Long = greetedAt[name] ?: return false
+        return System.currentTimeMillis() - t < GREET_LOCK_MS
+    }
+
+    // [SELF-FIX] jo msg humne khud bheja tha, wo scrape mein "unka" na bane
+    private fun rememberSent(key: String, text: String) {
+        val l: MutableList<String> = ourSent.getOrPut(key) { ArrayList() }
+        l.add(text.trim())
+        if (l.size > 40) l.removeAt(0)
+    }
+
+    private fun isOurOwnText(key: String, text: String): Boolean {
+        val t: String = text.trim()
+        if (t.isEmpty()) return true
+        val l: MutableList<String>? = ourSent[key]
+        if (l != null) {
+            for (m in l) {
+                if (m.equals(t, ignoreCase = true)) return true
+            }
+        }
+        return t.equals("aur batao, kaise ho?", ignoreCase = true)
+    }
+
+    private fun lockActive(key: String): Boolean {
+        return analyzedKey == key &&
+                System.currentTimeMillis() - analyzedAt < 5 * 60 * 1000L
+    }
+
+    private fun markAnalyzed(key: String) {
+        analyzedKey = key
+        analyzedAt = System.currentTimeMillis()
+    }
+
+    // ============ BLOCK 2: OVERLAY UI ============
     private fun lighten(color: Int): Int {
         val a = android.graphics.Color.alpha(color)
         val r = (android.graphics.Color.red(color) * 0.65 + 255 * 0.35).toInt()
@@ -108,19 +144,19 @@ class AutoAccessibilityService : AccessibilityService() {
         return android.graphics.Color.argb(a, r, g, b)
     }
 
-    private fun bgCircle(color: Int): GradientDrawable {
-        val d = GradientDrawable()
-        d.shape = GradientDrawable.OVAL
-        d.setColor(color)
-        return d
-    }
-
     private fun bg3d(color: Int): GradientDrawable {
         val d = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(lighten(color), color)
         )
         d.cornerRadius = 45f
+        return d
+    }
+
+    private fun bgCircle(color: Int): GradientDrawable {
+        val d = GradientDrawable()
+        d.shape = GradientDrawable.OVAL
+        d.setColor(color)
         return d
     }
 
@@ -135,15 +171,13 @@ class AutoAccessibilityService : AccessibilityService() {
         b.minHeight = 0
         b.minimumHeight = 0
         b.setPadding(2, 2, 2, 2)
-        // gol button 38dp
         val sizePx = dp(38)
         b.layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
         b.background = bgCircle(color)
         return b
     }
 
-    // [DRAG-ANYWHERE] kisi bhi button ko pakad ke khinch sakte ho.
-    // Chhota tap = click, khinchna = poore overlay ko move.
+    // drag ANYWHERE: chhota tap = click, khinchna = overlay move
     private fun attachDragAndClick(v: View, action: () -> Unit) {
         v.setOnTouchListener(object : View.OnTouchListener {
             private var downX: Float = 0f
@@ -194,19 +228,19 @@ class AutoAccessibilityService : AccessibilityService() {
             dt.textSize = 9f
             dt.maxLines = 2
             dt.setTextColor(0xFFFFFFFF.toInt())
-            dt.text = "AutoReply: ready (drag me)"
-            dt.setPadding(18, 8, 18, 8)
+            dt.text = "AutoReply ready"
+            dt.setPadding(14, 6, 14, 6)
             dt.background = bg3d(0xFF37474F.toInt())
             dt.elevation = 12f
             debugText = dt
             box.addView(dt)
 
-            // LOGS: debug text ko LONG-PRESS karo -> observer log clipboard me copy
+            // LOGS: debug text LONG-PRESS = observer log copy
             dt.setOnLongClickListener {
                 val txt: String = ObserverLog.dump(this)
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 cm.setPrimaryClip(android.content.ClipData.newPlainText("logs", txt))
-                dbg("Log copied - kahin bhi paste karke padho")
+                dbg("Log copied")
                 true
             }
 
@@ -230,32 +264,6 @@ class AutoAccessibilityService : AccessibilityService() {
 
             box.addView(rowBtns)
 
-            dt.setOnTouchListener(object : View.OnTouchListener {
-                private var downX: Float = 0f
-                private var downY: Float = 0f
-                override fun onTouch(v: View, event: MotionEvent): Boolean {
-                    when (event.action) {
-                        MotionEvent.ACTION_DOWN -> {
-                            downX = event.rawX
-                            downY = event.rawY
-                            return true
-                        }
-                        MotionEvent.ACTION_MOVE -> {
-                            val dx: Int = (event.rawX - downX).toInt()
-                            val dy: Int = (event.rawY - downY).toInt()
-                            downX = event.rawX
-                            downY = event.rawY
-                            val lp: WindowManager.LayoutParams =
-                                v.rootView.layoutParams as WindowManager.LayoutParams
-                            lp.x = lp.x - dx
-                            lp.y = lp.y + dy
-                            wm?.updateViewLayout(v.rootView, lp)
-                            return true
-                        }
-                    }
-                    return false
-                }
-            })
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -292,7 +300,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }
     }
 
-    // REC/PLAY toggles - macro recorder control
     private fun toggleRec() {
         val r = recorder ?: return
         val pkg: String = Prefs.queuePkg(this)
@@ -337,7 +344,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 findNodeWithText(root, "profile tags", 0) != null
     }
 
-    // ============ BLOCK 3: QUEUE ENGINE (list -> chat) ============
+    // ============ BLOCK 3: BRAIN (QUEUE <-> OBSERVE) ============
     private val heartbeatRunnable: Runnable = object : Runnable {
         override fun run() {
             if (queueActive) {
@@ -357,65 +364,64 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun process() {
         if (!queueActive) return
         if (!Prefs.masterEnabled(this)) return
-        if (sending || analyzing) {
-            return
-        }
+        if (sending || analyzing) return
         val pkg: String = Prefs.queuePkg(this)
         val root: AccessibilityNodeInfo? = rootInActiveWindow
-        if (root == null) {
-            return
-        }
+        if (root == null) return
         val currentPkg: String? = root.packageName?.toString()
         if (currentPkg != null && currentPkg != pkg && currentPkg != packageName) {
             wrongPkgCount++
             if (wrongPkgCount >= 3) {
-                dbg("PAUSED (user in other app)")
+                dbg("PAUSED (other app)")
                 return
             }
             return
         }
         wrongPkgCount = 0
-        if (currentPkg != pkg) {
-            return
-        }
-        // [BRAIN] naqsh chal raha hai -> har cycle pe check: koi pending msg to nahi?
+        if (currentPkg != pkg) return
+
+        // naqsh chal raha hai -> sirf pending check, kuch aur nahi
         if (recorder?.isPlaying == true) {
             checkPendingDuringObserve(root)
+            dbg("OBSERVE run")
             return
         }
+
         val leaveDialog: AccessibilityNodeInfo? =
             findNodeWithText(root, "are you sure to leave", 0)
         if (leaveDialog != null) {
-            dbg("Dialog - auto Cancel")
+            dbg("Dialog: Cancel")
             val cancelBtn: AccessibilityNodeInfo? = findNodeWithText(root, "cancel", 0)
             if (cancelBtn != null) {
                 cancelBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
             return
         }
+
         if (isInChat(root)) {
             profileBackCount = 0
             if (expectingChat) {
-                sentInChat = 0
                 expectingChat = false
+                sentInChat = 0
                 openedAt = System.currentTimeMillis()
-                dbg("Chat opened: " + lastSender)
+                dbg("Chat: " + lastSender)
                 return
             }
             handleChat(root)
             return
         }
         expectingChat = false
+
         if (isProfile(root)) {
             profileBackCount++
             val chatBtn: AccessibilityNodeInfo? = findNodeWithText(root, "chat", 0)
             if (chatBtn != null) {
-                dbg("Profile - opening chat")
+                dbg("Profile -> chat")
                 chatBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 expectingChat = true
                 return
             }
-            dbg("Profile page - back")
+            dbg("Profile -> back")
             performGlobalAction(GLOBAL_ACTION_BACK)
             if (profileBackCount >= 2) {
                 profileBackCount = 0
@@ -423,32 +429,32 @@ class AutoAccessibilityService : AccessibilityService() {
             }
             return
         }
+
         if (isOnList(root)) {
             val work2: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
             val fresh2: List<Pair<AccessibilityNodeInfo, String>> =
-                work2.filter { !wasRecentlyHandled(it.second) }
-            if (fresh2.isEmpty()) {
-                // [WAIT] koi pending nahi -> Messages screen pe rest karo,
-                // koi Hi nahi bhejenge. 20s baad naqsh repeat.
-                if (observeMode) return
-                if (idleSince == 0L) idleSince = System.currentTimeMillis()
-                val leftSec: Long =
-                    (OBSERVE_IDLE_MS - (System.currentTimeMillis() - idleSince)) / 1000L
-                if (leftSec <= 0L) {
-                    idleSince = 0L
-                    startObserve()
-                } else {
-                    dbg("WAIT " + leftSec + "s")
-                }
+                work2.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
+            if (fresh2.isNotEmpty()) {
+                idleSince = 0L
+                observeMode = false
+                handleList(root)
                 return
             }
-            // PENDING MILA -> queue mode (naqsh ruk jayega)
-            idleSince = 0L
-            observeMode = false
-            handleList(root)
+            // koi pending nahi -> WAIT -> 20s -> OBSERVE
+            if (observeMode) return
+            if (idleSince == 0L) idleSince = System.currentTimeMillis()
+            val leftSec: Long =
+                (OBSERVE_IDLE_MS - (System.currentTimeMillis() - idleSince)) / 1000L
+            if (leftSec <= 0L) {
+                idleSince = 0L
+                startObserve()
+            } else {
+                dbg("WAIT " + leftSec + "s")
+            }
             return
         }
-        dbg("Other screen - back")
+
+        dbg("Back")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
@@ -458,6 +464,8 @@ class AutoAccessibilityService : AccessibilityService() {
         wrongPkgCount = 0
         sending = false
         analyzing = false
+        observeMode = false
+        idleSince = 0L
         ourLastCount = 0
         qHandler.removeCallbacksAndMessages(null)
         val pm: PowerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -495,12 +503,10 @@ class AutoAccessibilityService : AccessibilityService() {
     private fun handleList(root: AccessibilityNodeInfo) {
         val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
         val fresh: List<Pair<AccessibilityNodeInfo, String>> =
-            work.filter { !wasRecentlyHandled(it.second) }
-        dbg("List: " + work.size + " rows, " + fresh.size + " fresh")
+            work.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
+        dbg("List: " + work.size + "/" + fresh.size)
         ObserverLog.log(this, "LIST rows=" + work.size + " fresh=" + fresh.size)
-        if (fresh.isEmpty()) {
-            return
-        }
+        if (fresh.isEmpty()) return
         val pick: Pair<AccessibilityNodeInfo, String> = fresh[0]
         lastSender = pick.second
         handledAt[pick.second] = System.currentTimeMillis()
@@ -522,15 +528,13 @@ class AutoAccessibilityService : AccessibilityService() {
             steps++
         }
         if (target != null && target.isClickable) {
-            val ok: Boolean = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            dbg(if (ok) "Row clicked" else "Row click failed")
-            ObserverLog.log(this, "ROW CLICK " + name + " ok=" + ok)
+            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            ObserverLog.log(this, "ROW CLICK " + name)
             return
         }
         if (nameNode != null) {
             val r = Rect()
             nameNode.getBoundsInScreen(r)
-            dbg("Tapped: " + name)
             tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
             return
         }
@@ -539,9 +543,7 @@ class AutoAccessibilityService : AccessibilityService() {
         tap((r2.left + r2.width() * 0.6f), ((r2.top + r2.bottom) / 2).toFloat())
     }
 
-    // ============ BLOCK 4: CHAT ENGINE (scrape + reply) ============
-    // [BRAIN] OBSERVE mode: tumhara recorded naqsh chalao. Gate har step pe
-    // check karta hai: msg aaya / app chhodi / OFF -> turant ruk.
+    // ---- OBSERVE mode ----
     private fun startObserve() {
         val r = recorder ?: return
         if (r.isPlaying) return
@@ -559,18 +561,11 @@ class AutoAccessibilityService : AccessibilityService() {
         if (!queueActive) return false
         val root = rootInActiveWindow
         if (root != null) {
-            // target app chhod diya -> ruk jao
             if (root.packageName?.toString() != Prefs.queuePkg(this)) return false
-            // Messages list pe pending mila -> ruk jao
             checkPendingDuringObserve(root)
-            if (recorderStoppedByGate()) return false
+            if (recorder?.isPlaying != true) return false
         }
-        // root null = screen transition, allow
         return true
-    }
-
-    private fun recorderStoppedByGate(): Boolean {
-        return observeMode && (recorder?.isPlaying != true)
     }
 
     private fun checkPendingDuringObserve(root: AccessibilityNodeInfo) {
@@ -579,72 +574,99 @@ class AutoAccessibilityService : AccessibilityService() {
         if (!isOnList(root)) return
         val work: List<Pair<AccessibilityNodeInfo, String>> = findWorkRows(root)
         val fresh: List<Pair<AccessibilityNodeInfo, String>> =
-            work.filter { !wasRecentlyHandled(it.second) }
+            work.filter { !wasRecentlyHandled(it.second) && !greetedRecently(it.second) }
         if (fresh.isNotEmpty()) {
-            // MSG PENDING! naqsh turant band, queue shuru
             recorder?.stopPlay()
             observeMode = false
             idleSince = 0L
             dbg("MSG! queue on")
-            ObserverLog.log(this, "OBSERVE -> QUEUE (msg aaya)")
+            ObserverLog.log(this, "OBSERVE -> QUEUE")
             scheduleProcess(400)
         }
     }
 
+    // ============ BLOCK 4: CHAT ENGINE ============
     private fun handleChat(root: AccessibilityNodeInfo) {
         if (System.currentTimeMillis() - openedAt < 2000) {
-            dbg("Chat loading...")
+            dbg("Loading...")
             scheduleProcess(1200)
             return
         }
         val key: String = lastSender
         val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
         if (msgs.isEmpty()) {
-            if (wasRecentlyHandled(key)) {
-                dbg("Fresh chat - no real msgs - next")
-                ObserverLog.log(this, "FRESH CHAT no msgs -> next")
+            if (wasRecentlyHandled(key) || greetedRecently(key)) {
+                dbg("Empty -> next")
                 goNextOrBack()
-                return
+            } else {
+                dbg("No msgs, wait")
+                scheduleProcess(2500)
             }
-            dbg("No msgs yet - waiting")
-            scheduleProcess(2500)
             return
         }
         if (sentInChat >= 3) {
-            dbg("Sent cap reached - next chat")
-            ObserverLog.log(this, "SENT CAP -> next")
+            dbg("Cap 3 -> next")
             goNextOrBack()
             return
         }
         val last: Pair<String, Boolean>? = msgs.lastOrNull()
         if (last != null && !last.second) {
+            // unki taraf se kuch dikha — par kya ye hamara khud ka bheja hua?
+            if (isOurOwnText(key, last.first)) {
+                ourLastCount++
+                if (lockActive(key)) { goNextOrBack(); return }
+                if (ourLastCount >= 2) {
+                    markAnalyzed(key)
+                    goNextOrBack()
+                    return
+                }
+                scheduleProcess(3000)
+                return
+            }
+            // asli unka message
             ourLastCount = 0
             if (analyzing) return
             analyzing = true
-            analyzedKey = key
-            analyzedAt = System.currentTimeMillis()
-            dbg("Their msg - analyzing")
-            ObserverLog.log(this, "CHAT their msg from=" + key + ": " + last.first.take(30))
+            markAnalyzed(key)
+            dbg("Reply -> " + last.first.take(15))
+            ObserverLog.log(this, "CHAT their: " + last.first.take(30))
             handleTheirMessage(msgs, key)
             return
         }
-        if (analyzedKey == key &&
-            System.currentTimeMillis() - analyzedAt < 5 * 60 * 1000L) {
-            dbg("Already replied (5min lock) - next/back")
-            goNextOrBack()
+        // last apna message hai
+        if (lockActive(key)) { goNextOrBack(); return }
+        val realFromThem: Boolean =
+            msgs.any { !it.second && !isOurOwnText(key, it.first) }
+        if (!realFromThem) {
+            // FRESH CHAT: unhone kabhi real msg nahi bheja -> sirf 1 greeting
+            if (greetedRecently(key) || sentInChat >= 1) {
+                markAnalyzed(key)
+                goNextOrBack()
+                return
+            }
+            greetOnce(key)
             return
         }
-        ourLastCount++
-        if (ourLastCount >= 1) {
-            ourLastCount = 0
-            analyzing = true
-            analyzedKey = key
-            analyzedAt = System.currentTimeMillis()
-            dbg("Template reply")
-            handleTheirMessage(listOf(Pair("hi", false)), key)
-            return
+        // unhone pehle bheja tha, jawab ho chuka -> next
+        markAnalyzed(key)
+        goNextOrBack()
+    }
+
+    private fun greetOnce(key: String) {
+        val sp = getSharedPreferences("intro_flags", Context.MODE_PRIVATE)
+        val done: Boolean = sp.getBoolean("i_" + key.lowercase(), false)
+        val text: String = if (!done) {
+            sp.edit().putBoolean("i_" + key.lowercase(), true).apply()
+            "aur batao, kaise ho?"
+        } else {
+            val b: List<String> = listOf("hii", "hello ji", "heyy", "namaste ji", "hii yrr")
+            b[(Math.random() * b.size).toInt()]
         }
-        scheduleProcess(3000)
+        greetedAt[key] = System.currentTimeMillis()
+        markAnalyzed(key)
+        dbg("Greet: " + text)
+        ObserverLog.log(this, "GREET " + key + " -> " + text)
+        typeAndSend(text)
     }
 
     private fun handleTheirMessage(msgs: List<Pair<String, Boolean>>, sender: String) {
@@ -659,8 +681,8 @@ class AutoAccessibilityService : AccessibilityService() {
             } catch (e: Exception) { null }
             analyzing = false
             if (reply.isNullOrBlank()) {
-                dbg("Reply failed - skip chat")
-                ObserverLog.log(this, "REPLY FAILED sender=" + sender)
+                dbg("No reply -> next")
+                ObserverLog.log(this, "REPLY FAIL " + sender)
                 handler.post { goNextOrBack() }
                 return@thread
             }
@@ -676,7 +698,6 @@ class AutoAccessibilityService : AccessibilityService() {
         val dw: Int = resources.displayMetrics.widthPixels
         val dh: Int = resources.displayMetrics.heightPixels
         collectMessages(root, out, dw, dh, 0)
-        // [FIX-SPAM] profile card ke texts (naam, age, VIP) ko message mat samjho
         val chatName: String = try { readChatName(root).trim().lowercase() } catch (e: Exception) { "" }
         return out.takeLast(12).filter { m ->
             val t: String = m.first.trim().lowercase()
@@ -708,7 +729,7 @@ class AutoAccessibilityService : AccessibilityService() {
                 node.getBoundsInScreen(r)
                 val cy: Int = (r.top + r.bottom) / 2
                 val cx: Int = (r.left + r.right) / 2
-                if (cy > dh * 0.20 && !looksLikeMeta(t)) {
+                if (cy > dh * 0.28 && !looksLikeMeta(t)) {
                     out.add(Pair(t, cx > dw / 2))
                 }
             }
@@ -721,12 +742,13 @@ class AutoAccessibilityService : AccessibilityService() {
 
     private fun looksLikeMeta(t: String): Boolean {
         if (t.length <= 1) return true
-        if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
-        if (t.matches(Regex("^\\d{4}/.*"))) return true
-        if (t.matches(Regex("^\\d+/\\d+$"))) return true
         val low: String = t.lowercase()
         if (t.matches(Regex("^\\d{1,3}$"))) return true
         if (low.matches(Regex("^vip\\d*$"))) return true
+        if (t.matches(Regex("^\\d{1,2}:\\d{2}.*"))) return true
+        if (t.matches(Regex("^\\d{4}/.*"))) return true
+        if (t.matches(Regex("^\\d+/\\d+$"))) return true
+        if (t.contains("/10")) return true
         if (low == "say something") return true
         if (t.endsWith("…") || t.endsWith("...")) return true
         if (low.contains("great fit")) return true
@@ -742,6 +764,7 @@ class AutoAccessibilityService : AccessibilityService() {
         if (low.contains("birthday") && low.contains("blessing")) return true
         if (low.contains("best wishes")) return true
         if (low.contains("replying to the other party")) return true
+        if (low.contains("double the reward")) return true
         if (low.contains("disturbance")) return true
         if (low.contains("only 10 messages")) return true
         if (low.contains("mutual following")) return true
@@ -750,7 +773,9 @@ class AutoAccessibilityService : AccessibilityService() {
         if (low.contains("view now")) return true
         if (low.contains("reply earns")) return true
         if (low.contains("diamond")) return true
-        if (low.contains("double the reward")) return true
+        if (low.contains("in voice chat")) return true
+        if (low.contains("voice intro")) return true
+        if (low.contains("album")) return true
         if (t == "View" || t == "New" || t == "Online") return true
         if (low == "online" || low.startsWith("online |")) return true
         if (low.endsWith("km") && t.length <= 20) return true
@@ -844,10 +869,11 @@ class AutoAccessibilityService : AccessibilityService() {
     // ============ BLOCK 5: SEND + NAVIGATION + HELPERS ============
     private fun typeAndSend(reply: String) {
         if (sending) {
-            dbg("Already sending - skip")
+            dbg("Busy")
             return
         }
         sentInChat++
+        rememberSent(lastSender, reply)
         sending = true
         pendingReply = reply
         doSetText()
@@ -866,14 +892,14 @@ class AutoAccessibilityService : AccessibilityService() {
             AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
             pendingReply
         )
-        dbg("Setting text...")
+        dbg("Typing...")
         field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         handler.postDelayed({
+            if (!queueActive) { sending = false; return@postDelayed }
             val root2: AccessibilityNodeInfo? = rootInActiveWindow
             val field2: AccessibilityNodeInfo? = if (root2 == null) null else findInput(root2)
             val txt: String = field2?.text?.toString() ?: ""
             if (txt.contains(pendingReply)) {
-                dbg("Text OK - sending")
                 sendFlow()
             } else {
                 doSetText()
@@ -881,7 +907,6 @@ class AutoAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
-    // Send button dhoondhta hai: input field ke same row mein, right side pe
     private fun findSendNodeInRow(
         root: AccessibilityNodeInfo,
         fieldRect: Rect,
@@ -958,13 +983,14 @@ class AutoAccessibilityService : AccessibilityService() {
             }
         }
         if (btn != null) {
-            dbg("Click SEND (node)")
+            dbg("SEND click")
             btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         } else {
-            dbg("Tap SEND")
+            dbg("SEND tap")
             tap(sx, sy)
         }
         handler.postDelayed({
+            if (!queueActive) { sending = false; return@postDelayed }
             val root2: AccessibilityNodeInfo? = rootInActiveWindow
             val field2: AccessibilityNodeInfo? = if (root2 == null) null else findInput(root2)
             if (field2 == null) {
@@ -994,13 +1020,19 @@ class AutoAccessibilityService : AccessibilityService() {
                     goNextOrBack()
                     return@postDelayed
                 }
+                if (sentInChat >= 3) {
+                    goNextOrBack()
+                    return@postDelayed
+                }
                 val msgs: List<Pair<String, Boolean>> = scrapeMessages(root)
                 val last: Pair<String, Boolean>? = msgs.lastOrNull()
-                if (last != null && !last.second && !looksLikeMeta(last.first)) {
-                    dbg("New msg during send - replying")
+                if (last != null && !last.second &&
+                    !isOurOwnText(lastSender, last.first) &&
+                    !looksLikeMeta(last.first)) {
+                    // beech mein sach mein unka msg aaya
                     analyzing = true
-                    analyzedKey = lastSender
-                    analyzedAt = System.currentTimeMillis()
+                    markAnalyzed(lastSender)
+                    dbg("New msg -> reply")
                     handleTheirMessage(msgs, lastSender)
                     return@postDelayed
                 }
@@ -1029,24 +1061,24 @@ class AutoAccessibilityService : AccessibilityService() {
                     val r = Rect()
                     node.getBoundsInScreen(r)
                     if (!r.isEmpty) {
-                        dbg("Next unread - tap fallback")
                         tap(((r.left + r.right) / 2).toFloat(), ((r.top + r.bottom) / 2).toFloat())
                         ok = true
                     }
                 }
                 if (ok) {
-                    dbg("Next unread clicked")
-                    ObserverLog.log(this, "NEXT UNREAD clicked")
+                    dbg("Next unread")
+                    ObserverLog.log(this, "NEXT UNREAD")
                     expectingChat = true
                     sending = false
                     analyzing = false
                     ourLastCount = 0
+                    sentInChat = 0
                     return
                 }
             }
         }
         dbg("Back to list")
-        ObserverLog.log(this, "BACK to list")
+        ObserverLog.log(this, "BACK")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
@@ -1216,8 +1248,7 @@ class AutoAccessibilityService : AccessibilityService() {
 
         scheduleRecord()
 
-        // [OBSERVER] har event log + macro recorder hook
-        ObserverLog.log(this, "EVT pkg=" + pkg + " type=" + event.eventType + " cls=" + (event.className ?: "-"))
+        ObserverLog.log(this, "EVT " + pkg + " t=" + event.eventType)
         recorder?.onEvent(event)
 
         if (!queueActive) return
